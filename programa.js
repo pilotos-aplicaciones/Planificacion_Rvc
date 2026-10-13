@@ -159,8 +159,10 @@ function tabCodigos(el) {
     ${S.codigos.length ? "" : `<div class="empty"><strong>Aún no hay códigos</strong>Crea códigos como Frente, Piso o Depto para clasificar las actividades.</div>`}
     ${S.codigos.map((c, ci) => `
       <section class="code-block">
-        <header><h3 style="margin:0">${esc(c.codigo)} <span class="muted" style="font-weight:400">(${c.valores.length} valores)</span></h3>
-          ${ed ? `<button class="btn btn-danger btn-sm del-codigo" data-ci="${ci}">Eliminar código</button>` : ""}</header>
+        <header><div><h3 style="margin:0">${esc(c.codigo)} <span class="muted" style="font-weight:400">(${c.valores.length} valores)</span></h3>
+            <p class="${c.descripcion ? "muted" : "warn"}" style="margin:2px 0 0">${c.descripcion ? esc(c.descripcion) : "Sin descripción"}</p></div>
+          ${ed ? `<div class="toolbar" style="margin:0"><button class="btn btn-secondary btn-sm edit-desc" data-ci="${ci}">Editar descripción</button>
+            <button class="btn btn-danger btn-sm del-codigo" data-ci="${ci}">Eliminar código</button></div>` : ""}</header>
         <div class="table-wrap"><table>
           <thead><tr><th class="num" style="width:50px">Orden</th><th>Valor</th><th>Descripción</th>${ed ? "<th style='width:130px'></th>" : ""}</tr></thead>
           <tbody>${c.valores.map((v, vi) => `<tr><td class="num">${vi + 1}</td><td class="mono">${esc(v.valor)}</td><td>${esc(v.descripcion)}</td>
@@ -178,14 +180,17 @@ function tabCodigos(el) {
 
   $("#btn-nuevo-codigo").onclick = () => openModal(`
     <h2>Nuevo código</h2>
-    <label>Nombre del código<input name="codigo" maxlength="30" placeholder="Ej. Piso"><span class="help">Letras, números y espacios. No se puede renombrar después.</span></label>
+    <label>Código<input name="codigo" maxlength="30" placeholder="Ej. Piso"><span class="help">Nombre corto: letras, números y espacios. No se puede cambiar después.</span></label>
+    <label>Descripción<input name="descripcion" maxlength="100" placeholder="Ej. Piso del edificio donde se ejecuta la actividad"><span class="help">Para qué sirve el código. Se puede editar después.</span></label>
     <p class="msg-error" hidden></p>
     <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary">Crear código</button></div>`,
     async (fd) => {
-      const n = String(fd.get("codigo")).trim();
-      if (!/^[\p{L}\p{N} _]{1,30}$/u.test(n)) throw new Error("El nombre debe tener entre 1 y 30 letras, números o espacios.");
-      if (S.codigos.some((c) => c.codigo.toLowerCase() === n.toLowerCase())) throw new Error(`Ya existe el código "${n}".`);
-      await guardarCodigos([...copia(), { codigo: n, valores: [] }]); toast("Código creado");
+      const n = String(fd.get("codigo")).trim(), desc = String(fd.get("descripcion")).trim(), errs = [];
+      if (!/^[\p{L}\p{N} _]{1,30}$/u.test(n)) errs.push("El código debe tener entre 1 y 30 letras, números o espacios.");
+      if (S.codigos.some((c) => c.codigo.toLowerCase() === n.toLowerCase())) errs.push(`Ya existe el código "${n}".`);
+      if (!desc) errs.push("Falta la descripción.");
+      if (errs.length) throw new Error(errs.join("\n"));
+      await guardarCodigos([...copia(), { codigo: n, descripcion: desc, valores: [] }]); toast("Código creado");
     });
   $$(".add-valor", el).forEach((b) => (b.onclick = () => run(async () => {
     const ci = +b.dataset.ci, inV = $(`.nv-valor[data-ci="${ci}"]`, el), inD = $(`.nv-desc[data-ci="${ci}"]`, el);
@@ -207,6 +212,19 @@ function tabCodigos(el) {
     if (n) throw new Error(`No se puede eliminar: ${n} actividad(es) usan ${cod} = ${val}.`);
     const c = copia(); c[ci].valores.splice(vi, 1); await guardarCodigos(c);
   }, "Valor eliminado")));
+  $$(".edit-desc", el).forEach((b) => (b.onclick = () => {
+    const ci = +b.dataset.ci, c0 = S.codigos[ci];
+    openModal(`
+      <h2>Descripción de ${esc(c0.codigo)}</h2>
+      <label>Descripción<input name="descripcion" maxlength="100" value="${esc(c0.descripcion || "")}"></label>
+      <p class="msg-error" hidden></p>
+      <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary">Guardar</button></div>`,
+      async (fd) => {
+        const desc = String(fd.get("descripcion")).trim();
+        if (!desc) throw new Error("Falta la descripción.");
+        const c = copia(); c[ci].descripcion = desc; await guardarCodigos(c); toast("Descripción guardada");
+      });
+  }));
   $$(".del-codigo", el).forEach((b) => (b.onclick = () => run(async () => {
     const ci = +b.dataset.ci, cod = S.codigos[ci].codigo, u = usoCodigo(cod);
     if (u.acts) throw new Error(`No se puede eliminar: ${u.acts} actividad(es) usan el código ${cod}.`);
@@ -384,7 +402,7 @@ function tabActividades(el) {
     ${probs.length ? `<div class="issues"><span class="warn">${probs.length} problema(s) por revisar</span><ul>${probs.slice(0, 15).map((m) => `<li>${esc(m)}</li>`).join("")}${probs.length > 15 ? `<li>… y ${probs.length - 15} más</li>` : ""}</ul></div>` : ""}
     <div class="table-wrap"><table>
       <thead><tr><th>ID</th><th>Nombre</th><th>Partida</th><th class="num">Cantidad</th><th class="num">Duración (días)</th><th>Predecesoras</th>
-        ${S.codigos.map((c) => `<th>${esc(c.codigo)}</th>`).join("")}<th>Restricción</th></tr></thead>
+        ${S.codigos.map((c) => `<th title="${esc(c.descripcion || "")}">${esc(c.codigo)}</th>`).join("")}<th>Restricción</th></tr></thead>
       <tbody id="act-body"></tbody></table></div>`;
   const pintar = () => {
     const fp = $("#f-partida").value, ft = $("#f-texto").value.trim().toLowerCase();
@@ -494,7 +512,7 @@ function modalActividad(orig, partidaSugerida) {
         $("#campos-modo", form).innerHTML = h;
         $("#campos-codigos", form).innerHTML = S.codigos.length ? S.codigos.map((c) => {
           const req = p.modo === "ritmo" && p.codigosUnidad.includes(c.codigo);
-          return `<label>${esc(c.codigo)}${req ? ' <span class="warn">*</span>' : ""}<select name="cod:${esc(c.codigo)}"><option value="">—</option>
+          return `<label title="${esc(c.descripcion || "")}">${esc(c.codigo)}${req ? ' <span class="warn">*</span>' : ""}<select name="cod:${esc(c.codigo)}"><option value="">—</option>
             ${c.valores.map((v) => `<option value="${esc(v.valor)}" ${prev.cod[c.codigo] === v.valor ? "selected" : ""}>${esc(v.valor)}${v.descripcion ? " – " + esc(v.descripcion) : ""}</option>`).join("")}</select></label>`;
         }).join("") : `<p class="help">No hay códigos definidos en el programa.</p>`;
         if (p.modo === "cantidad") {
