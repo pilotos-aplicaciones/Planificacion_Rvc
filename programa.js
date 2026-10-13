@@ -2,6 +2,7 @@
 import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, errorMsg, openModal } from "./util.js";
+import { calcular, duracionEfectiva } from "./cpm.js";
 
 let S = null;   // estado del programa abierto
 let CTX = null;
@@ -40,6 +41,7 @@ async function cargar(id) {
   return {
     id, prog, partidas, tab: "resumen",
     codigos: dSnap.exists() ? dSnap.data().codigos || [] : [],
+    feriados: dSnap.exists() ? dSnap.data().feriados || [] : [],
     usuarios: me.admin ? await CTX.loadUsuarios() : [],
     puedeEditar: me.admin || prog.miembros?.[me.uid] === "editor",
   };
@@ -47,15 +49,21 @@ async function cargar(id) {
 
 const todas = () => [...S.partidas.values()].flatMap((p) => p.actividades.map((a) => ({ ...a, partida: p.id })));
 const fechaCL = (iso) => (iso ? iso.split("-").reverse().join("-") : "");
+const fechaCorta = (iso) => (iso ? `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(2, 4)}` : "");
 
-export function duracionEfectiva(a, p) {
-  if (!p) return null;
-  if (p.modo === "fija") return a.duracion ?? null;
-  if (p.modo === "ritmo") return a.duracion || 1;
-  if (!(a.cantidad > 0) || !(p.rendimiento > 0)) return null;
-  const d = a.cantidad / p.rendimiento;
-  return p.redondeo === "normal" ? Math.max(1, Math.round(d)) : Math.ceil(d - 1e-9);
+// Firma de los datos que afectan el cálculo: si cambia, el cálculo guardado está desactualizado.
+function firma() {
+  const datos = JSON.stringify({
+    f: S.prog.fechaInicio, c: S.prog.calendario, fer: S.feriados.map((x) => x.fecha).sort(),
+    cod: S.codigos.map((c) => [c.codigo, c.valores.map((v) => v.valor)]),
+    p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion]),
+    a: todas().map((a) => JSON.stringify([a.id, a.partida, a.cantidad, a.duracion, a.predecesoras,
+      a.restriccion, Object.entries(a.codigos || {}).sort()])).sort(),
+  });
+  let h = 5381; for (let i = 0; i < datos.length; i++) h = ((h << 5) + h + datos.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16);
 }
+
 
 // ---------- Estructura de la vista ----------
 function render() {
@@ -92,14 +100,24 @@ function tabResumen(el) {
     return `<tr><td>${esc(u.nombre)}</td><td>${esc(u.email)}</td><td>${ctrl}</td></tr>`;
   }).join("");
   const disponibles = S.usuarios.filter((u) => !p.miembros?.[u.uid]);
+  const ed = S.puedeEditar;
   el.innerHTML = `
+    ${ed ? `<div class="toolbar"><span class="spacer"></span><button id="btn-editar-datos" class="btn btn-secondary btn-sm">Editar datos del programa</button></div>` : ""}
     <dl class="meta">
       <div><dt>Fecha de inicio</dt><dd>${esc(fechaCL(p.fechaInicio))}</dd></div>
       <div><dt>Calendario</dt><dd>${esc(CALENDARIOS[p.calendario] || p.calendario)}</dd></div>
       <div><dt>Estado</dt><dd><span class="badge badge-ok">${esc(p.estado)}</span></dd></div>
       <div><dt>Programa tipo</dt><dd>${p.programaTipo ? esc(p.programaTipo.nombre) : "Sin asignar"}</dd></div>
     </dl>
-    <h2>Miembros</h2>
+    <h2>Feriados</h2>
+    <p class="help">Días no laborables del programa, además de los domingos${p.calendario === "LS" ? "" : " y sábados"}.</p>
+    <div class="table-wrap" style="max-width:560px"><table><thead><tr><th>Fecha</th><th>Feriado</th>${ed ? "<th></th>" : ""}</tr></thead>
+      <tbody>${S.feriados.map((f, i) => `<tr><td class="mono">${esc(fechaCL(f.fecha))}</td><td>${esc(f.nombre)}</td>${ed ? `<td><button class="icon-btn del-fer" data-i="${i}" aria-label="Eliminar">✕</button></td>` : ""}</tr>`).join("")
+        || `<tr><td colspan="3" class="muted">Sin feriados.</td></tr>`}</tbody></table></div>
+    ${ed ? `<div class="add-row" style="max-width:560px"><input type="date" id="fer-fecha" style="flex:0 0 160px"><input id="fer-nombre" placeholder="Nombre (ej. Glorias Navales)" maxlength="60">
+      <button id="btn-add-fer" class="btn btn-secondary">Agregar feriado</button></div>
+      <p class="help">Referenciales: verificar con la fuente oficial antes de usar en un programa real.</p>` : ""}
+    <h2 style="margin-top:28px">Miembros</h2>
     <div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Email</th><th>Rol</th></tr></thead><tbody>${filas || `<tr><td colspan="3">Sin miembros.</td></tr>`}</tbody></table></div>
     ${me.admin ? `<div class="row-actions">
         <select id="nuevo-miembro"><option value="">Agregar usuario…</option>${disponibles.map((u) => `<option value="${esc(u.uid)}">${esc(u.nombre)} (${esc(u.email)})</option>`).join("")}</select>
@@ -107,6 +125,37 @@ function tabResumen(el) {
         <button id="btn-agregar" class="btn btn-primary">Agregar</button></div>
       <p class="help">¿No aparece la persona? Debe ingresar una vez a la app con su cuenta Google para quedar registrada.</p>
       <div class="row-actions" style="margin-top:32px"><button id="btn-eliminar" class="btn btn-danger">Eliminar programa</button></div>` : ""}`;
+  if (ed) {
+    const guardarFer = async (lista) => { lista.sort((a, b) => a.fecha.localeCompare(b.fecha)); await setDoc(refDef(), { feriados: lista }, { merge: true }); S.feriados = lista; render(); };
+    $("#btn-add-fer").onclick = async () => {
+      const fecha = $("#fer-fecha").value, nombre = $("#fer-nombre").value.trim();
+      if (!fecha) return toast("Elige la fecha del feriado");
+      if (S.feriados.some((f) => f.fecha === fecha)) return toast("Esa fecha ya está en la lista");
+      try { await guardarFer([...S.feriados, { fecha, nombre: nombre || "Feriado" }]); toast("Feriado agregado"); } catch (e) { toast(errorMsg(e)); }
+    };
+    $$(".del-fer", el).forEach((b) => (b.onclick = async () => {
+      const l = [...S.feriados]; l.splice(+b.dataset.i, 1);
+      try { await guardarFer(l); toast("Feriado eliminado"); } catch (e) { toast(errorMsg(e)); }
+    }));
+    $("#btn-editar-datos").onclick = () => openModal(`
+      <h2>Datos del programa</h2>
+      <div class="grid2">
+        <label>Proyecto RVC<input name="proyecto" maxlength="80" value="${esc(p.proyecto)}"></label>
+        <label>Etapa<input name="etapa" maxlength="40" value="${esc(p.etapa)}"></label>
+      </div>
+      <label>Nombre del programa<input name="nombre" maxlength="80" value="${esc(p.nombre)}"></label>
+      <div class="grid2">
+        <label>Fecha de inicio<input name="fechaInicio" type="date" value="${esc(p.fechaInicio)}"></label>
+        <label>Calendario<select name="calendario">${Object.entries(CALENDARIOS).map(([k, v]) => `<option value="${k}" ${k === p.calendario ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      </div>
+      <p class="msg-error" hidden></p>
+      <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary">Guardar</button></div>`,
+      async (fd) => {
+        const d = Object.fromEntries([...fd.entries()].map(([k, v]) => [k, String(v).trim()]));
+        if (!d.proyecto || !d.etapa || !d.nombre || !d.fechaInicio) throw new Error("Completa proyecto, etapa, nombre y fecha de inicio.");
+        await updateDoc(refProg(S.id), d); Object.assign(S.prog, d); render(); toast("Datos guardados");
+      });
+  }
   if (!me.admin) return;
 
   const guardarMiembros = async (miembros) => {
@@ -396,33 +445,43 @@ function tabActividades(el) {
     <div class="toolbar">
       <select id="f-partida"><option value="">Todas las partidas</option>${parts.map((p) => `<option value="${esc(p.id)}">${esc(p.id)} – ${esc(p.nombre)}</option>`).join("")}</select>
       <input id="f-texto" placeholder="Buscar por ID o nombre" style="min-width:220px">
+      <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="f-criticas"> Solo críticas</label>
+      <select id="f-orden"><option value="partida">Ordenar por partida</option><option value="inicio">Ordenar por inicio</option></select>
       <span class="spacer"></span>
-      ${ed ? `<button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
+      ${ed ? `<button id="btn-calcular" class="btn btn-secondary" ${todas().length ? "" : "disabled"}>Calcular programa</button>
+        <button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
     </div>
+    ${estadoCalculo()}
     ${probs.length ? `<div class="issues"><span class="warn">${probs.length} problema(s) por revisar</span><ul>${probs.slice(0, 15).map((m) => `<li>${esc(m)}</li>`).join("")}${probs.length > 15 ? `<li>… y ${probs.length - 15} más</li>` : ""}</ul></div>` : ""}
     <div class="table-wrap"><table>
-      <thead><tr><th>ID</th><th>Nombre</th><th>Partida</th><th class="num">Cantidad</th><th class="num">Duración (días)</th><th>Predecesoras</th>
+      <thead><tr><th>ID</th><th>Nombre</th><th>Partida</th><th class="num">Cantidad</th><th class="num">Duración (días)</th><th>Inicio</th><th>Término</th><th class="num" title="Holgura total (días)">HT</th><th class="num" title="Holgura libre (días)">HL</th><th>Predecesoras</th>
         ${S.codigos.map((c) => `<th title="${esc(c.descripcion || "")}">${esc(c.codigo)}</th>`).join("")}<th>Restricción</th></tr></thead>
       <tbody id="act-body"></tbody></table></div>`;
   const pintar = () => {
-    const fp = $("#f-partida").value, ft = $("#f-texto").value.trim().toLowerCase();
-    const filas = todas().filter((a) => (!fp || a.partida === fp) && (!ft || a.id.toLowerCase().includes(ft) || (a.nombre || "").toLowerCase().includes(ft)))
-      .sort((a, b) => a.partida.localeCompare(b.partida) || a.id.localeCompare(b.id));
+    const fp = $("#f-partida").value, ft = $("#f-texto").value.trim().toLowerCase(), fc = $("#f-criticas").checked;
+    const porInicio = $("#f-orden").value === "inicio";
+    const filas = todas().filter((a) => (!fp || a.partida === fp) && (!fc || a.calc?.critica) && (!ft || a.id.toLowerCase().includes(ft) || (a.nombre || "").toLowerCase().includes(ft)))
+      .sort((a, b) => porInicio ? (a.calc?.ie || "9").localeCompare(b.calc?.ie || "9") || a.id.localeCompare(b.id)
+        : a.partida.localeCompare(b.partida) || a.id.localeCompare(b.id));
     $("#act-body").innerHTML = filas.map((a) => {
       const p = S.partidas.get(a.partida), dur = duracionEfectiva(a, p);
-      return `<tr class="${ed ? "link" : ""}" data-id="${esc(a.id)}">
+      const c = a.calc;
+      return `<tr class="${ed ? "link" : ""} ${c?.critica ? "critica" : ""}" data-id="${esc(a.id)}">
         <td class="mono">${esc(a.id)}</td><td>${esc(a.nombre)}</td>
         <td><span class="swatch" style="background:${esc(p?.color || "#808080")}"></span>${esc(a.partida)}</td>
         <td class="num">${p?.modo === "cantidad" ? fmtNum(a.cantidad) + " " + esc(p.unidad) : ""}</td>
         <td class="num">${dur ?? `<span class="warn">?</span>`}${p?.modo === "cantidad" ? ' <span class="help">calc.</span>' : ""}</td>
+        <td class="mono">${esc(fechaCorta(c?.ie))}</td><td class="mono">${esc(fechaCorta(c?.te))}</td>
+        <td class="num ${c && c.ht <= 0 ? "warn" : ""}">${c ? c.ht : ""}</td><td class="num">${c ? c.hl : ""}</td>
         <td>${esc(predText(a.predecesoras))}</td>
         ${S.codigos.map((c) => `<td>${esc(a.codigos?.[c.codigo] || "")}</td>`).join("")}
         <td>${a.restriccion?.tipo ? esc(RESTRICCIONES[a.restriccion.tipo] + " " + fechaCL(a.restriccion.fecha)) : ""}</td></tr>`;
-    }).join("") || `<tr><td colspan="${7 + S.codigos.length}" class="muted">${todas().length ? "Ninguna actividad coincide con el filtro." : "Aún no hay actividades."}</td></tr>`;
+    }).join("") || `<tr><td colspan="${11 + S.codigos.length}" class="muted">${todas().length ? "Ninguna actividad coincide con el filtro." : "Aún no hay actividades."}</td></tr>`;
     if (ed) $$("#act-body tr.link").forEach((tr) => (tr.onclick = () => modalActividad(todas().find((a) => a.id === tr.dataset.id))));
   };
-  $("#f-partida").onchange = pintar; $("#f-texto").oninput = pintar;
+  $("#f-partida").onchange = pintar; $("#f-texto").oninput = pintar; $("#f-criticas").onchange = pintar; $("#f-orden").onchange = pintar;
   pintar();
+  if (ed && todas().length) $("#btn-calcular").onclick = calcularPrograma;
   if (ed && parts.length) $("#btn-nueva-act").onclick = () => modalActividad(null, $("#f-partida").value);
 }
 
@@ -526,4 +585,46 @@ function modalActividad(orig, partidaSugerida) {
       if (nuevo) form.elements.actid.oninput = () => (form.elements.actid.dataset.tocado = "1");
       pintar(true);
     });
+}
+
+// ---------- Cálculo del programa ----------
+function estadoCalculo() {
+  const k = S.prog.calculo;
+  if (!todas().length) return "";
+  if (!k) return `<div class="calc-box">Programa sin calcular.${S.puedeEditar ? " Presiona \"Calcular programa\" para obtener fechas, holguras y ruta crítica." : ""}</div>`;
+  const vigente = k.firma === firma();
+  const cuando = new Date(k.fecha).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+  return `<div class="calc-box ${vigente ? "" : "calc-old"}">
+    <div><span class="help">Término del programa</span><strong>${esc(fechaCL(k.termino))}</strong></div>
+    <div><span class="help">Duración</span><strong>${k.duracion} días hábiles</strong></div>
+    <div><span class="help">Actividades críticas</span><strong>${k.criticas}</strong></div>
+    <div><span class="help">Calculado</span><strong>${esc(cuando)}</strong></div>
+    ${vigente ? "" : `<p class="warn" style="margin:0;flex-basis:100%">Hubo cambios después del último cálculo. ${S.puedeEditar ? "Presiona \"Calcular programa\" para actualizar." : "Pide al editor que recalcule."}</p>`}
+  </div>`;
+}
+
+async function calcularPrograma() {
+  const probs = problemas();
+  if (probs.length) return toast("Corrige los problemas indicados antes de calcular.");
+  const btn = $("#btn-calcular"); btn.disabled = true; btn.textContent = "Calculando…";
+  try {
+    const r = calcular({ actividades: todas(), partidas: Object.fromEntries(S.partidas), codigos: S.codigos, programa: S.prog, feriados: S.feriados });
+    if (r.errores.length) {
+      openModal(`<h2>No se pudo calcular</h2><ul>${r.errores.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>
+        <div class="modal-actions"><button class="btn btn-primary" value="cancel">Entendido</button></div>`, async () => {});
+      return;
+    }
+    const batch = writeBatch(CTX.db), nuevas = new Map();
+    for (const p of S.partidas.values()) {
+      const arr = p.actividades.map((a) => { const x = r.res.get(a.id); return { ...a, calc: { dur: x.dur, ie: x.ie, te: x.te, it: x.it, tt: x.tt, ht: x.ht, hl: x.hl, critica: x.critica } }; });
+      nuevas.set(p.id, arr); batch.update(refPart(p.id), { actividades: arr });
+    }
+    const criticas = [...r.res.values()].filter((x) => x.critica).length;
+    const calculo = { fecha: new Date().toISOString(), termino: r.termino, duracion: r.duracionTotal, criticas, firma: firma(), por: CTX.me.uid };
+    batch.update(refProg(S.id), { calculo });
+    await batch.commit();
+    nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+    S.prog.calculo = calculo;
+    render(); toast(`Programa calculado: término ${fechaCL(r.termino)}`);
+  } catch (e) { toast(errorMsg(e)); btn.disabled = false; btn.textContent = "Calcular programa"; }
 }

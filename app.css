@@ -131,3 +131,10 @@ dialog { width: min(620px, 94vw); }
 .issues { background: #FBEDEC; border: 1px solid #EBC3C1; border-radius: var(--radius-m); padding: 12px 16px; margin-bottom: 16px; font-size: .92rem; }
 .issues ul { margin: 6px 0 0; padding-left: 18px; }
 @media (max-width: 760px) { #modal-form .grid2 { grid-template-columns: 1fr; } }
+
+/* ---- Sesión 6: cálculo ---- */
+.calc-box { display: flex; flex-wrap: wrap; gap: 14px 32px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--plan); border-radius: var(--radius-s); padding: 12px 18px; margin-bottom: 14px; }
+.calc-box > div { display: grid; }
+.calc-box strong { font-size: 1.05rem; }
+.calc-box.calc-old { border-left-color: var(--critical); }
+tr.critica td:first-child { box-shadow: inset 3px 0 0 var(--critical); color: var(--critical); }
