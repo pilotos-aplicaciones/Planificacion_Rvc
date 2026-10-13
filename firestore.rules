@@ -1,0 +1,61 @@
+rules_version = '2';
+// Reglas de seguridad – App de Planificación RVC (Sesión 3)
+// Roles: administrador global (usuarios/{uid}.admin) y rol por programa (editor | lector).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid))
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.admin == true;
+    }
+    function rolEn(progId) {
+      return get(/databases/$(database)/documents/programas/$(progId)).data.miembros.get(request.auth.uid, '');
+    }
+    function miembrosValidos() {
+      let d = request.resource.data;
+      return d.miembros is map && d.miembrosUids is list
+        && d.miembrosUids.toSet() == d.miembros.keys().toSet()
+        && d.miembros.values().toSet().hasOnly(['editor', 'lector']);
+    }
+
+    // Usuarios: cada uno se registra solo (sin ser admin). Solo un admin otorga admin.
+    match /usuarios/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nombre', 'email', 'admin', 'creado'])
+        && request.resource.data.admin == false;
+      allow update: if isAdmin()
+        || (signedIn() && request.auth.uid == uid
+            && request.resource.data.admin == resource.data.admin);
+      allow delete: if isAdmin();
+    }
+
+    // Programas tipo: solo administradores.
+    match /programasTipo/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Programas: los ven sus miembros; los crea y borra un admin; el editor no cambia miembros.
+    match /programas/{progId} {
+      allow get: if isAdmin()
+        || (signedIn() && resource.data.miembros.get(request.auth.uid, '') != '');
+      allow list: if isAdmin()
+        || (signedIn() && request.auth.uid in resource.data.miembrosUids);
+      allow create: if isAdmin() && miembrosValidos();
+      allow update: if (isAdmin() && miembrosValidos())
+        || (signedIn() && resource.data.miembros.get(request.auth.uid, '') == 'editor'
+            && request.resource.data.miembros == resource.data.miembros
+            && request.resource.data.miembrosUids == resource.data.miembrosUids);
+      allow delete: if isAdmin();
+
+      // Contenido del programa (partidas, definiciones, candado): leen miembros, escriben editores.
+      match /{sub=**} {
+        allow read: if isAdmin() || rolEn(progId) in ['editor', 'lector'];
+        allow write: if isAdmin() || rolEn(progId) == 'editor';
+      }
+    }
+  }
+}

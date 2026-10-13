@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planificación RVC</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <!-- Pantalla de ingreso -->
+  <section id="login" class="login" hidden>
+    <div class="login-box">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1>Planificación RVC</h1>
+      <p>Programas de obra, camino crítico y avance.</p>
+      <button id="btn-login" class="btn btn-primary">Ingresar con Google</button>
+      <p id="login-error" class="msg-error" hidden></p>
+    </div>
+  </section>
+
+  <!-- Aplicación -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>Planificación RVC</div>
+      <div class="user">
+        <span id="user-name"></span>
+        <span id="user-admin" class="badge badge-admin" hidden>Administrador</span>
+        <button id="btn-logout" class="btn btn-ghost">Salir</button>
+      </div>
+    </header>
+
+    <nav class="sidebar" aria-label="Navegación">
+      <a href="#programas" data-view="programas" class="nav-item">Programas</a>
+      <a href="#usuarios" data-view="usuarios" class="nav-item admin-only" hidden>Usuarios</a>
+    </nav>
+
+    <main id="main" class="main"></main>
+
+    <nav class="bottomnav" aria-label="Navegación móvil">
+      <a href="#programas" data-view="programas" class="nav-item">Programas</a>
+      <a href="#usuarios" data-view="usuarios" class="nav-item admin-only" hidden>Usuarios</a>
+    </nav>
+
+    <button id="fab" class="fab" hidden>+ Nuevo programa</button>
+  </div>
+
+  <!-- Modal genérico -->
+  <dialog id="modal"><form method="dialog" id="modal-form"></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
