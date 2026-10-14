@@ -62,7 +62,7 @@ function firma() {
   const datos = JSON.stringify({
     f: S.prog.fechaInicio, c: S.prog.calendario, fer: S.feriados.map((x) => x.fecha).sort(),
     cod: S.codigos.map((c) => [c.codigo, c.valores.map((v) => v.valor)]),
-    p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion]).sort(),
+    p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion, p.modo === "ritmo" ? p.duracionUnidad || 1 : null]).sort(),
     a: todas().map((a) => JSON.stringify([a.id, a.partida, a.cantidad, a.duracion,
       (a.predecesoras || []).map((x) => [x.id, x.tipo, Number(x.desfase) || 0]),
       a.restriccion, Object.entries(a.codigos || {}).sort()])).sort(),
@@ -297,7 +297,7 @@ function tabCodigos(el) {
 // ---------- Partidas ----------
 function parametro(p) {
   if (p.modo === "cantidad") return `${fmtNum(p.rendimiento)} ${esc(p.unidad)}/día`;
-  if (p.modo === "ritmo") return `${fmtNum(p.ritmo)} unid/día`;
+  if (p.modo === "ritmo") return `${fmtNum(p.ritmo)} unid/día, ${p.duracionUnidad || 1} día(s)/unid`;
   return "—";
 }
 function tabPartidas(el) {
@@ -350,6 +350,7 @@ function modalPartida(p) {
     </div></fieldset>
     <fieldset data-modo="ritmo"><legend>Por ritmo</legend><div class="grid2">
       <label>Ritmo (unidades por día)<input name="ritmo" type="number" step="any" min="0" value="${p.ritmo ?? ""}" placeholder="1,5"></label>
+      <label>Duración por unidad (días)<input name="duracionUnidad" type="number" step="1" min="1" value="${p.duracionUnidad ?? 1}"></label>
       <label>Dirección de avance<select name="direccion"><option value="ascendente">Ascendente</option><option value="descendente" ${p.direccion === "descendente" ? "selected" : ""}>Descendente</option></select></label>
       <label>Código de unidad 1<select name="cu1">${opCod(p.codigosUnidad?.[0])}</select></label>
       <label>Código de unidad 2<select name="cu2">${opCod(p.codigosUnidad?.[1])}</select></label>
@@ -372,14 +373,15 @@ function modalPartida(p) {
         if (S.partidas.has(id)) errs.push(`Ya existe la partida ${id}.`);
       }
       if (!g("nombre")) errs.push("Falta el nombre.");
-      const d = { id, nombre: g("nombre"), modo, color: g("color").toUpperCase(), unidad: null, rendimiento: null, redondeo: null, ritmo: null, codigosUnidad: [], direccion: null };
+      const d = { id, nombre: g("nombre"), modo, color: g("color").toUpperCase(), unidad: null, rendimiento: null, redondeo: null, ritmo: null, codigosUnidad: [], direccion: null, duracionUnidad: null };
       if (modo === "cantidad") {
         d.unidad = g("unidad"); d.rendimiento = n("rendimiento"); d.redondeo = g("redondeo");
         if (!d.unidad) errs.push("Falta la unidad de medida.");
         if (!(d.rendimiento > 0)) errs.push("El rendimiento diario debe ser mayor que 0.");
       }
       if (modo === "ritmo") {
-        d.ritmo = n("ritmo"); d.direccion = g("direccion");
+        d.ritmo = n("ritmo"); d.direccion = g("direccion"); d.duracionUnidad = n("duracionUnidad") ?? 1;
+        if (!(Number.isInteger(d.duracionUnidad) && d.duracionUnidad >= 1)) errs.push("La duración por unidad debe ser un número entero de días (1 o más).");
         d.codigosUnidad = ["cu1", "cu2", "cu3"].map(g).filter(Boolean);
         if (!(d.ritmo > 0)) errs.push("El ritmo debe ser mayor que 0.");
         if (!d.codigosUnidad.length) errs.push("Elige al menos un código de unidad (crea los códigos en la pestaña Códigos).");
@@ -520,7 +522,7 @@ function modalActividad(orig, partidaSugerida) {
       const datos = {
         ...(orig || {}), id, nombre: g("nombre"), partida,
         cantidad: p.modo === "cantidad" ? n("cantidad") : null,
-        duracion: p.modo === "cantidad" ? null : n("duracion"),
+        duracion: p.modo === "fija" ? n("duracion") : null,
         predecesoras: lista,
         restriccion: g("rTipo") ? { tipo: g("rTipo"), fecha: g("rFecha") || null } : null,
         codigos,
@@ -556,8 +558,9 @@ function modalActividad(orig, partidaSugerida) {
         let h = `<p class="help" style="margin:0">Modo: <strong>${esc(MODOS[p.modo])}</strong>${p.modo !== "fija" ? ` (${parametro(p)})` : ""}</p>`;
         if (p.modo === "cantidad") h += `<div class="grid2"><label>Cantidad (${esc(p.unidad)})<input name="cantidad" type="number" step="any" min="0" value="${esc(prev.cantidad)}"></label>
             <p class="help" id="dur-calc" style="align-self:end"></p></div>`;
-        else h += `<div class="grid2"><label>Duración (días)<input name="duracion" type="number" step="1" min="1" value="${esc(prev.duracion)}" ${p.modo === "ritmo" ? 'placeholder="1"' : ""}></label>
-            ${p.modo === "ritmo" ? `<p class="help" style="align-self:end">Vacía = 1 día. El inicio se desfasa según el ritmo.</p>` : "<span></span>"}</div>`;
+        else if (p.modo === "ritmo") h += `<div class="grid2"><label>Duración (días)<input type="number" value="${p.duracionUnidad || 1}" disabled></label>
+            <p class="help" style="align-self:end">Definida por la partida (duración por unidad). El inicio se desfasa según el ritmo.</p></div>`;
+        else h += `<div class="grid2"><label>Duración (días)<input name="duracion" type="number" step="1" min="1" value="${esc(prev.duracion)}"></label><span></span></div>`;
         $("#campos-modo", form).innerHTML = h;
         $("#campos-codigos", form).innerHTML = S.codigos.length ? S.codigos.map((c) => {
           const req = p.modo === "ritmo" && p.codigosUnidad.includes(c.codigo);
@@ -692,9 +695,9 @@ async function exportarExcel() {
     hoja("Relaciones", rel, [12, 12, 6, 20, 22]);
 
     // 3. Partidas
-    hoja("Partidas", [["ID", "Nombre", "Modo", "Unidad", "Rendimiento diario", "Redondeo", "Ritmo (unid/día)", "Códigos de unidad", "Dirección", "N° actividades"],
+    hoja("Partidas", [["ID", "Nombre", "Modo", "Unidad", "Rendimiento diario", "Redondeo", "Ritmo (unid/día)", "Duración por unidad (días)", "Códigos de unidad", "Dirección", "N° actividades"],
       ...[...S.partidas.values()].map((p) => [p.id, p.nombre, MODOS[p.modo], p.unidad || "", p.rendimiento ?? "", p.redondeo || "",
-        p.ritmo ?? "", (p.codigosUnidad || []).join("; "), p.direccion || "", p.actividades.length])], [10, 26, 14, 8, 12, 10, 12, 18, 12, 12]);
+        p.ritmo ?? "", p.modo === "ritmo" ? p.duracionUnidad || 1 : "", (p.codigosUnidad || []).join("; "), p.direccion || "", p.actividades.length])], [10, 26, 14, 8, 12, 10, 12, 14, 18, 12, 12]);
 
     // 4. Calendario
     hoja("Calendario", [["Parámetro", "Valor"], ["Programa", S.prog.nombre], ["Fecha de inicio", aFecha(S.prog.fechaInicio)],

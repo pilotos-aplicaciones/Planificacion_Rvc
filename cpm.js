@@ -27,7 +27,7 @@ export function crearCalendario(fechaInicio, tipo, feriados = []) {
 export function duracionEfectiva(a, p) {
   if (!p) return null;
   if (p.modo === "fija") return a.duracion ?? null;
-  if (p.modo === "ritmo") return a.duracion || 1;
+  if (p.modo === "ritmo") return p.duracionUnidad || 1;   // la define la partida
   if (!(a.cantidad > 0) || !(p.rendimiento > 0)) return null;
   const d = a.cantidad / p.rendimiento;
   return p.redondeo === "normal" ? Math.max(1, Math.round(d)) : Math.ceil(d - 1e-9);

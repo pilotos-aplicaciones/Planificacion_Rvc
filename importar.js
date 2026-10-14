@@ -67,6 +67,8 @@ export function leerExcel(arrayBuffer) {
       if (!p.codigosUnidad.length) err("faltan los códigos de unidad (ej. Piso; Depto).");
       p.codigosUnidad.forEach((c) => { if (!codMap[c]) err(`el código de unidad "${c}" no existe en la hoja Códigos.`); });
       p.direccion = txt(r["Dirección de avance"]).toLowerCase() === "descendente" ? "descendente" : "ascendente";
+      p.duracionUnidad = num(r["Duración por unidad (días)"]) ?? 1;
+      if (!(Number.isInteger(p.duracionUnidad) && p.duracionUnidad >= 1)) err("la duración por unidad debe ser un número entero de días mayor o igual a 1.");
     }
     const color = txt(r["Color"]).replace("#", "");
     if (color) { if (/^[0-9A-Fa-f]{6}$/.test(color)) p.color = "#" + color.toUpperCase(); else err("el color debe tener 6 caracteres (ej. 2E75B6)."); }
@@ -128,16 +130,18 @@ export function leerExcel(arrayBuffer) {
   // Validación de conjunto (mismas reglas que la edición manual)
   const pMap = new Map(partidas.map((p) => [p.id, p]));
   const ids = new Set(actividades.map((a) => a.id));
-  const cantIgnorada = [];
+  const cantIgnorada = [], durIgnorada = [];
   actividades.forEach((a) => {
     const p = pMap.get(a.partida);
     if (p?.modo === "cantidad") a.duracion = null;
     if (p && p.modo !== "cantidad" && a.cantidad !== null) cantIgnorada.push(filaDe[a.id]);
     if (p?.modo !== "cantidad") a.cantidad = null;
+    if (p?.modo === "ritmo") { if (a.duracion !== null) durIgnorada.push(filaDe[a.id]); a.duracion = null; }
     validarActividad(a, ids, (pid) => pMap.get(pid), codigos)
       .forEach((m) => errores.push(`Actividades, fila ${filaDe[a.id]} (${a.id}): ${m}.`));
   });
   if (cantIgnorada.length) avisos.push(`Se ignora la cantidad en ${cantIgnorada.length} actividad(es) de partidas fijas o por ritmo, porque no se usa (filas ${cantIgnorada.slice(0, 10).join(", ")}${cantIgnorada.length > 10 ? "…" : ""}).`);
+  if (durIgnorada.length) avisos.push(`Se ignora la duración en ${durIgnorada.length} actividad(es) de partidas por ritmo: la define la partida ("Duración por unidad (días)", 1 si no se indica). Filas ${durIgnorada.slice(0, 10).join(", ")}${durIgnorada.length > 10 ? "…" : ""}.`);
   const ciclo = buscarCiclo(actividades);
   if (ciclo) errores.push(`Ciclo lógico entre predecesoras: ${ciclo.join(" → ")}.`);
 

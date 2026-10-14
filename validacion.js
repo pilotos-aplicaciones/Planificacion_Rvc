@@ -24,7 +24,6 @@ export function validarActividad(a, ids, partidaDe, codigos) {
   if (p.modo === "fija" && !(Number.isInteger(a.duracion) && a.duracion > 0)) e.push("la duración debe ser un número entero de días mayor que 0");
   if (p.modo === "cantidad" && !(a.cantidad > 0)) e.push(`falta la cantidad en ${p.unidad} (mayor que 0)`);
   if (p.modo === "ritmo") {
-    if (a.duracion !== null && a.duracion !== undefined && !(Number.isInteger(a.duracion) && a.duracion > 0)) e.push("la duración debe ser un número entero de días mayor que 0");
     (p.codigosUnidad || []).forEach((c) => { if (!a.codigos?.[c]) e.push(`falta el código de unidad ${c}`); });
   }
   const vistos = new Set();
