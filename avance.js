@@ -75,14 +75,14 @@ export function tabAvance(el, api) {
       const p = S.partidas.get(a.partida), av = PEND.get(a.id) || a.avance || {}, est = av.estado || "no";
       const dis = editable ? "" : "disabled";
       let avanceCtrl = `<span class="muted">—</span>`;
-      if (p?.modo === "fija") avanceCtrl = `<input class="av-pct" type="number" min="0" max="99" step="1" value="${esc(av.pct ?? "")}" ${est === "curso" && editable ? "" : "disabled"} style="width:64px"> %`;
+      if (p?.modo === "fija") avanceCtrl = `<input class="av-pct" type="number" min="0" max="100" step="1" value="${esc(av.pct ?? "")}" ${est === "curso" && editable ? "" : "disabled"} style="width:64px"> %`;
       if (p?.modo === "cantidad") avanceCtrl = `<input class="av-ej" type="number" min="0" step="any" value="${esc(av.ejecutado ?? "")}" ${est === "curso" && editable ? "" : "disabled"} style="width:80px"> / ${fmtNum(a.cantidad)} ${esc(p.unidad)}`;
       return `<tr data-id="${esc(a.id)}" class="${PEND.has(a.id) ? "av-dirty" : ""}">
         <td class="mono">${esc(a.id)}</td><td>${esc(a.nombre)}</td><td>${esc(a.partida)}</td>
         <td class="mono">${esc(corta(a.calc?.ie))}</td><td class="mono">${esc(corta(a.calc?.te))}</td>
         <td><select class="av-est" ${dis}>${Object.entries(ESTADOS).map(([k, v]) => `<option value="${k}" ${k === est ? "selected" : ""}>${v}</option>`).join("")}</select></td>
         <td><input class="av-ir" type="date" value="${esc(av.inicioReal || "")}" ${est !== "no" && editable ? "" : "disabled"} max="${esc(corte)}"></td>
-        <td><input class="av-tr" type="date" value="${esc(av.terminoReal || "")}" ${est === "term" && editable ? "" : "disabled"} max="${esc(corte)}"></td>
+        <td><input class="av-tr" type="date" value="${esc(av.terminoReal || "")}" ${est !== "no" && editable ? "" : "disabled"} max="${esc(corte)}"></td>
         <td style="white-space:nowrap">${avanceCtrl}</td></tr>`;
     }).join("") || `<tr><td colspan="9" class="muted">No hay actividades en esta vista.</td></tr>`;
     if (!editable) return;
@@ -101,10 +101,25 @@ export function tabAvance(el, api) {
         marcar(av); pintar();
       };
       $(".av-ir", tr).onchange = (ev) => { const av = leer(); av.inicioReal = ev.target.value || null; marcar(av); tr.classList.add("av-dirty"); };
-      $(".av-tr", tr).onchange = (ev) => { const av = leer(); av.terminoReal = ev.target.value || null; marcar(av); tr.classList.add("av-dirty"); };
+      // Término real: al ingresarlo la actividad queda terminada; al borrarlo vuelve a en curso.
+      $(".av-tr", tr).onchange = (ev) => {
+        const av = leer(); av.terminoReal = ev.target.value || null;
+        if (av.terminoReal) { av.estado = "term"; av.pct = null; av.ejecutado = null; } else if (av.estado === "term") av.estado = "curso";
+        marcar(av); pintar();
+      };
+      // 100 % o cantidad completa: queda terminada con término propuesto en la fecha de corte.
+      const terminar = (av) => { av.estado = "term"; av.pct = null; av.ejecutado = null; if (!av.terminoReal) av.terminoReal = corte; marcar(av); pintar(); };
       const pct = $(".av-pct", tr), ej = $(".av-ej", tr);
-      if (pct) pct.onchange = () => { const av = leer(); av.pct = pct.value === "" ? null : Number(pct.value); marcar(av); tr.classList.add("av-dirty"); };
-      if (ej) ej.onchange = () => { const av = leer(); av.ejecutado = ej.value === "" ? null : Number(ej.value.replace(",", ".")); marcar(av); tr.classList.add("av-dirty"); };
+      if (pct) pct.onchange = () => {
+        const av = leer(); av.pct = pct.value === "" ? null : Number(pct.value);
+        if (av.pct >= 100) return terminar(av);
+        marcar(av); tr.classList.add("av-dirty");
+      };
+      if (ej) ej.onchange = () => {
+        const av = leer(); av.ejecutado = ej.value === "" ? null : Number(ej.value.replace(",", "."));
+        if (av.ejecutado >= a.cantidad) return terminar(av);
+        marcar(av); tr.classList.add("av-dirty");
+      };
     });
   };
   const actualizarBotones = () => { if (!ed) return; $("#av-guardar").disabled = $("#av-guardar-calc").disabled = !PEND.size; };
