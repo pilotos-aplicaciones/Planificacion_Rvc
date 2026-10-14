@@ -20,8 +20,8 @@ export function validarAvance(a, p, corte) {
     }
   }
   if (av.estado === "curso") {
-    if (p?.modo === "fija" && av.pct !== null && av.pct !== "" && !(av.pct >= 0 && av.pct < 100)) e.push("el % de avance debe estar entre 0 y 99 (si es 100, márcala terminada)");
-    if (p?.modo === "cantidad" && av.ejecutado !== null && av.ejecutado !== "" && !(av.ejecutado >= 0 && av.ejecutado < a.cantidad))
+    if (p?.modo === "fija" && av.pct != null && av.pct !== "" && !(av.pct >= 0 && av.pct < 100)) e.push("el % de avance debe estar entre 0 y 99 (si es 100, márcala terminada)");
+    if (p?.modo === "cantidad" && av.ejecutado != null && av.ejecutado !== "" && !(av.ejecutado >= 0 && av.ejecutado < a.cantidad))
       e.push(`la cantidad ejecutada debe estar entre 0 y ${fmtNum(a.cantidad)} (si llegó al total, márcala terminada)`);
   }
   return e;
@@ -33,6 +33,8 @@ let VISTA = "pend";
 export function tabAvance(el, api) {
   const S = api.S, ed = api.puedeEditar, corte = S.prog.fechaCorte || "";
   PEND = new Map();
+  const desde = S.prog.fechaCorteAnterior || S.prog.fechaInicio;   // rango de los calendarios de fechas reales
+  const minDe = (v) => (v && v < desde ? v : desde);
   el.innerHTML = `
     <div class="toolbar">
       <label class="help" style="display:flex;gap:6px;align-items:center">Fecha de corte
@@ -45,11 +47,10 @@ export function tabAvance(el, api) {
         <option value="todas" ${VISTA === "todas" ? "selected" : ""}>Todas</option></select>
       <input id="av-texto" placeholder="Buscar por ID o nombre" style="min-width:200px">
       <span class="spacer"></span>
-      ${ed ? `<button id="av-guardar" class="btn btn-secondary" disabled>Guardar avance</button>
-        <button id="av-guardar-calc" class="btn btn-primary" disabled>Guardar y recalcular</button>` : ""}
+      ${ed ? `<button id="av-guardar" class="btn btn-primary" disabled>Guardar avance</button>` : ""}
     </div>
     <p class="help" style="margin:0 0 10px">${corte
-      ? `Avance informado hasta el <strong>${esc(fechaCL(corte))}</strong> inclusive; lo pendiente se programa desde el día hábil siguiente. "Por actualizar" muestra lo que debía haber partido al corte y no ha terminado.`
+      ? `Avance informado hasta el <strong>${esc(fechaCL(corte))}</strong> inclusive (período desde el ${esc(fechaCL(desde))}); lo pendiente se programa desde el día hábil siguiente. "Por actualizar" muestra lo que debía haber partido al corte y no ha terminado.`
       : `<span class="warn">Define la fecha de corte para registrar avance.</span>`}</p>
     ${api.estadoCalculo()}
     <div class="table-wrap"><table class="av-table">
@@ -81,8 +82,8 @@ export function tabAvance(el, api) {
         <td class="mono">${esc(a.id)}</td><td>${esc(a.nombre)}</td><td>${esc(a.partida)}</td>
         <td class="mono">${esc(corta(a.calc?.ie))}</td><td class="mono">${esc(corta(a.calc?.te))}</td>
         <td><select class="av-est" ${dis}>${Object.entries(ESTADOS).map(([k, v]) => `<option value="${k}" ${k === est ? "selected" : ""}>${v}</option>`).join("")}</select></td>
-        <td><input class="av-ir" type="date" value="${esc(av.inicioReal || "")}" ${est !== "no" && editable ? "" : "disabled"} max="${esc(corte)}"></td>
-        <td><input class="av-tr" type="date" value="${esc(av.terminoReal || "")}" ${est !== "no" && editable ? "" : "disabled"} max="${esc(corte)}"></td>
+        <td><input class="av-ir" type="date" value="${esc(av.inicioReal || "")}" ${est !== "no" && editable ? "" : "disabled"} min="${esc(minDe(av.inicioReal))}" max="${esc(corte)}"></td>
+        <td><input class="av-tr" type="date" value="${esc(av.terminoReal || "")}" ${est !== "no" && editable ? "" : "disabled"} min="${esc(minDe(av.terminoReal))}" max="${esc(corte)}"></td>
         <td style="white-space:nowrap">${avanceCtrl}</td></tr>`;
     }).join("") || `<tr><td colspan="9" class="muted">No hay actividades en esta vista.</td></tr>`;
     if (!editable) return;
@@ -122,7 +123,7 @@ export function tabAvance(el, api) {
       };
     });
   };
-  const actualizarBotones = () => { if (!ed) return; $("#av-guardar").disabled = $("#av-guardar-calc").disabled = !PEND.size; };
+  const actualizarBotones = () => { if (!ed) return; $("#av-guardar").disabled = !PEND.size; };
   $("#av-vista").onchange = (e) => { VISTA = e.target.value; pintar(); };
   $("#av-texto").oninput = pintar;
   pintar();
@@ -133,21 +134,49 @@ export function tabAvance(el, api) {
     if (PEND.size && !confirm("Hay avance sin guardar que se perderá al cambiar la fecha de corte. ¿Continuar?")) return;
     try { await api.guardarCorte(f); toast(f ? `Fecha de corte: ${fechaCL(f)}` : "Fecha de corte eliminada"); } catch (e) { toast(errorMsg(e)); }
   };
-  const guardar = async (recalcular) => {
+  const guardar = async () => {
     const errs = [];
     PEND.forEach((av, id) => {
       const a = api.todas().find((x) => x.id === id), p = S.partidas.get(a.partida);
       validarAvance({ ...a, avance: av }, p, corte).forEach((m) => errs.push(`${id}: ${m}`));
     });
     if (errs.length) { toast(`Revisa el avance: ${errs[0]}${errs.length > 1 ? ` (y ${errs.length - 1} más)` : ""}`); return; }
+    const conf = conflictos(api, PEND);
+    if (conf.length && !(await api.confirmar(`
+      <h2>Avance fuera de secuencia</h2>
+      <p>Estas fechas reales no respetan relaciones del programa:</p>
+      <ul>${conf.slice(0, 15).map((m) => `<li>${esc(m)}</li>`).join("")}${conf.length > 15 ? `<li>… y ${conf.length - 15} más</li>` : ""}</ul>
+      <p class="help">Si así ocurrió en obra, puedes guardar igual: el cálculo respeta la lógica para el trabajo pendiente (lógica retenida).</p>
+      <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Revisar</button><button class="btn btn-primary" value="save">Guardar igual</button></div>`))) return;
     try {
       const n = PEND.size;
       await api.guardarAvance(new Map([...PEND].map(([id, av]) => [id, av.estado === "no" ? null : av])));
       PEND = new Map();
-      toast(`Avance guardado (${n} actividad(es))`);
-      if (recalcular) await api.recalcular(); else api.render();
+      toast(`Avance guardado (${n} actividad(es)). Recuerda calcular el programa.`);
+      api.render();
     } catch (e) { toast(errorMsg(e)); }
   };
-  $("#av-guardar").onclick = () => guardar(false);
-  $("#av-guardar-calc").onclick = () => guardar(true);
+  $("#av-guardar").onclick = () => guardar();
+}
+
+// Relaciones lógicas (FI/II con desfase) que las fechas reales no respetan. Solo se revisan las que tocan actividades editadas.
+function conflictos(api, pend) {
+  const cal = api.calendario(), Wfin = (f) => cal.W(cal.sumarDia(f));
+  const acts = api.todas(), av = (a) => pend.get(a.id) || a.avance || {};
+  const porId = new Map(acts.map((a) => [a.id, a])), out = [];
+  acts.forEach((s) => (s.predecesoras || []).forEach((r) => {
+    const pr = porId.get(r.id); if (!pr) return;
+    if (!pend.has(s.id) && !pend.has(pr.id)) return;
+    const as = av(s), ap = av(pr), d = Number(r.desfase) || 0;
+    if (!as.inicioReal || !as.estado || as.estado === "no") return;
+    const txtDes = d ? ` con desfase ${d > 0 ? "+" : ""}${d}` : "";
+    if (r.tipo === "SS") {
+      if (!ap.inicioReal || ap.estado === "no") out.push(`${s.id} inició el ${fechaCL(as.inicioReal)}, pero su predecesora ${pr.id} (II${txtDes}) no ha iniciado.`);
+      else if (cal.W(as.inicioReal) < cal.W(ap.inicioReal) + d) out.push(`${s.id} inició el ${fechaCL(as.inicioReal)}, antes de lo que permite ${pr.id} (II${txtDes}, inició el ${fechaCL(ap.inicioReal)}).`);
+    } else {
+      if (ap.estado !== "term" || !ap.terminoReal) out.push(`${s.id} inició el ${fechaCL(as.inicioReal)}, pero su predecesora ${pr.id} (FI${txtDes}) no ha terminado.`);
+      else if (cal.W(as.inicioReal) < Wfin(ap.terminoReal) + d) out.push(`${s.id} inició el ${fechaCL(as.inicioReal)}, antes de lo que permite ${pr.id} (FI${txtDes}, terminó el ${fechaCL(ap.terminoReal)}).`);
+    }
+  }));
+  return out;
 }

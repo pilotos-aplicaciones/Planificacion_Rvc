@@ -184,3 +184,6 @@ tr.av-dirty td { background: #FFF8E1; }
 .g-corte { stroke: #B7791F; stroke-width: 1.5; }
 .g-corte-t { font-size: 10px; fill: #B7791F; font-weight: 600; }
 .g-prog { fill: #1C2B3A; opacity: .55; }
+.calc-chip { display: inline-block; margin-top: 6px; font-size: .85rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+.calc-chip.ok { background: #E3F1E8; color: var(--ok); }
+.calc-chip.pend { background: #FBEDEC; color: var(--critical); }

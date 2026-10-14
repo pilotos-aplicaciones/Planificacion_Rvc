@@ -84,10 +84,11 @@ function render() {
   $("#main").innerHTML = `
     <a href="#programas" class="back">‹ Programas</a>
     <div class="page-head">
-      <div><h1>${esc(p.nombre)}</h1><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p></div>
+      <div><h1>${esc(p.nombre)}</h1><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p>${chipCalculo()}</div>
       <div class="toolbar" style="margin:0">
         <span class="badge ${miRol ? "badge-" + miRol : "badge-lector"}">${miRol ? ROLES[miRol] : "Administrador"}</span>
-        ${S.puedeEditar ? `<button id="btn-importar" class="btn btn-secondary btn-sm">Importar desde Excel</button>` : ""}
+        ${S.puedeEditar ? `<button id="btn-calcular" class="btn btn-primary btn-sm" ${nAct ? "" : "disabled"}>Calcular programa</button>
+          <button id="btn-importar" class="btn btn-secondary btn-sm">Importar desde Excel</button>` : ""}
         <button id="btn-exportar" class="btn btn-secondary btn-sm">Exportar a Excel</button>
         <button id="btn-recargar" class="btn btn-secondary btn-sm">Recargar</button>
       </div>
@@ -96,7 +97,7 @@ function render() {
       `<a class="tab ${S.tab === k ? "active" : ""}" href="#programa/${esc(S.id)}/${k}">${t}${n !== "" ? `<span class="count">${n}</span>` : ""}</a>`).join("")}</nav>
     <div id="tab"></div>`;
   $("#btn-exportar").onclick = exportarExcel;
-  if (S.puedeEditar) $("#btn-importar").onclick = importarExcel;
+  if (S.puedeEditar) { $("#btn-importar").onclick = importarExcel; if (nAct) $("#btn-calcular").onclick = calcularPrograma; }
   $("#btn-recargar").onclick = () => { const t = S.tab; S = null; viewPrograma(CTX, location.hash.split("/")[1], t); };
   ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades, gantt: (el) => tabGantt(el, apiGantt()), avance: (el) => tabAvance(el, apiAvance()) })[S.tab]($("#tab"));
 }
@@ -433,8 +434,7 @@ function tabActividades(el) {
       <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="f-criticas"> Solo críticas</label>
       <select id="f-orden"><option value="partida">Ordenar por partida</option><option value="inicio">Ordenar por inicio</option></select>
       <span class="spacer"></span>
-      ${ed ? `<button id="btn-calcular" class="btn btn-secondary" ${todas().length ? "" : "disabled"}>Calcular programa</button>
-        <button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
+      ${ed ? `<button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
     </div>
     ${estadoCalculo()}
     ${probs.length ? `<div class="issues"><span class="warn">${probs.length} problema(s) por revisar</span><ul>${probs.slice(0, 15).map((m) => `<li>${esc(m)}</li>`).join("")}${probs.length > 15 ? `<li>… y ${probs.length - 15} más</li>` : ""}</ul></div>` : ""}
@@ -466,7 +466,6 @@ function tabActividades(el) {
   };
   $("#f-partida").onchange = pintar; $("#f-texto").oninput = pintar; $("#f-criticas").onchange = pintar; $("#f-orden").onchange = pintar;
   pintar();
-  if (ed && todas().length) $("#btn-calcular").onclick = calcularPrograma;
   if (ed && parts.length) $("#btn-nueva-act").onclick = () => modalActividad(null, $("#f-partida").value);
 }
 
@@ -600,7 +599,7 @@ function modalActividad(orig, partidaSugerida) {
 function estadoCalculo() {
   const k = S.prog.calculo;
   if (!todas().length) return "";
-  if (!k) return `<div class="calc-box">Programa sin calcular.${S.puedeEditar ? " Presiona \"Calcular programa\" para obtener fechas, holguras y ruta crítica." : ""}</div>`;
+  if (!k) return "";
   const vigente = k.firma === firma();
   const cuando = new Date(k.fecha).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
   return `<div class="calc-box ${vigente ? "" : "calc-old"}">
@@ -609,8 +608,16 @@ function estadoCalculo() {
     <div><span class="help">Actividades críticas</span><strong>${k.criticas}</strong></div>
     <div><span class="help">Fecha de corte</span><strong>${k.corte ? esc(fechaCL(k.corte)) : "Sin corte"}</strong></div>
     <div><span class="help">Calculado</span><strong>${esc(cuando)}</strong></div>
-    ${vigente ? "" : `<p class="warn" style="margin:0;flex-basis:100%">Hubo cambios después del último cálculo. ${S.puedeEditar ? "Presiona \"Calcular programa\" para actualizar." : "Pide al editor que recalcule."}</p>`}
   </div>`;
+}
+
+function chipCalculo() {
+  if (!todas().length) return "";
+  const k = S.prog.calculo;
+  if (!k) return `<span class="calc-chip pend">Programa sin calcular${S.puedeEditar ? ': presiona "Calcular programa"' : ""}</span>`;
+  if (k.firma !== firma()) return `<span class="calc-chip pend">Hay cambios sin calcular${S.puedeEditar ? ': presiona "Calcular programa"' : ": pide al editor que recalcule"}</span>`;
+  const cuando = new Date(k.fecha).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+  return `<span class="calc-chip ok">Calculado ${esc(cuando)}, término ${esc(fechaCL(k.termino))}</span>`;
 }
 
 async function calcularPrograma() {
@@ -827,9 +834,18 @@ function apiGantt() {
 function apiAvance() {
   return {
     S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar, render,
-    recalcular: () => calcularPrograma(),
     primerDiaTrasCorte: () => { const cal = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados); return cal.fecha(cal.W(cal.sumarDia(S.prog.fechaCorte))); },
-    guardarCorte: async (f) => { await updateDoc(refProg(S.id), { fechaCorte: f }); S.prog.fechaCorte = f; render(); },
+    guardarCorte: async (f) => {
+      const prev = S.prog.fechaCorte || null;
+      const ant = f && prev && f > prev ? prev : (f && S.prog.fechaCorteAnterior && S.prog.fechaCorteAnterior < f ? S.prog.fechaCorteAnterior : null);
+      await updateDoc(refProg(S.id), { fechaCorte: f, fechaCorteAnterior: ant });
+      S.prog.fechaCorte = f; S.prog.fechaCorteAnterior = ant; render();
+    },
+    calendario: () => crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados),
+    confirmar: (html) => new Promise((ok) => openModal(html, async (fd, form, sub) => { ok(sub?.value === "save"); }, (form) => {
+      form.querySelector('[value="cancel"]').onclick = () => ok(false);
+      form.parentElement.addEventListener("close", () => ok(false), { once: true });   // Esc también cuenta como "Revisar"
+    })),
     guardarAvance: async (cambios) => {
       const batch = writeBatch(CTX.db), nuevas = new Map();
       for (const p of S.partidas.values()) {
