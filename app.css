@@ -138,3 +138,6 @@ dialog { width: min(620px, 94vw); }
 .calc-box strong { font-size: 1.05rem; }
 .calc-box.calc-old { border-left-color: var(--critical); }
 tr.critica td:first-child { box-shadow: inset 3px 0 0 var(--critical); color: var(--critical); }
+
+/* Versión */
+.brand .version { font-size: .75rem; font-weight: 500; opacity: .7; margin-left: 10px; }

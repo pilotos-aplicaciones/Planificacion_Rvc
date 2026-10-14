@@ -3,6 +3,8 @@ import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, writeBa
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, errorMsg, openModal } from "./util.js";
 import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./cpm.js";
+import { parsePredecesoras, predText, validarActividad, buscarCiclo } from "./validacion.js";
+import { leerExcel } from "./importar.js";
 
 let S = null;   // estado del programa abierto
 let CTX = null;
@@ -77,6 +79,7 @@ function render() {
       <div><h1>${esc(p.nombre)}</h1><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p></div>
       <div class="toolbar" style="margin:0">
         <span class="badge ${miRol ? "badge-" + miRol : "badge-lector"}">${miRol ? ROLES[miRol] : "Administrador"}</span>
+        ${S.puedeEditar ? `<button id="btn-importar" class="btn btn-secondary btn-sm">Importar desde Excel</button>` : ""}
         <button id="btn-exportar" class="btn btn-secondary btn-sm">Exportar a Excel</button>
         <button id="btn-recargar" class="btn btn-secondary btn-sm">Recargar</button>
       </div>
@@ -85,6 +88,7 @@ function render() {
       `<a class="tab ${S.tab === k ? "active" : ""}" href="#programa/${esc(S.id)}/${k}">${t}${n !== "" ? `<span class="count">${n}</span>` : ""}</a>`).join("")}</nav>
     <div id="tab"></div>`;
   $("#btn-exportar").onclick = exportarExcel;
+  if (S.puedeEditar) $("#btn-importar").onclick = importarExcel;
   $("#btn-recargar").onclick = () => { const t = S.tab; S = null; viewPrograma(CTX, location.hash.split("/")[1], t); };
   ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades })[S.tab]($("#tab"));
 }
@@ -375,57 +379,8 @@ function modalPartida(p) {
 }
 
 // ---------- Actividades: validación ----------
-export function parsePredecesoras(txt) {
-  const lista = [], errs = [];
-  String(txt || "").split(";").map((s) => s.trim()).filter(Boolean).forEach((tok) => {
-    const m = tok.match(/^(\S+?)(?:\s+(FI|FS|II|SS))?$/i);
-    if (!m) errs.push(`La predecesora "${tok}" no tiene un formato válido (ej. CERA-0001 o CERA-0001 II).`);
-    else lista.push({ id: m[1].toUpperCase(), tipo: /^(II|SS)$/i.test(m[2] || "") ? "SS" : "FS" });
-  });
-  return { lista, errs };
-}
-const predText = (arr) => (arr || []).map((x) => x.id + (x.tipo === "SS" ? " II" : "")).join("; ");
-
-function validar(a, ids) {
-  const e = [], p = S.partidas.get(a.partida);
-  if (!a.nombre) e.push("falta el nombre");
-  if (!p) { e.push(`la partida ${a.partida} no existe`); return e; }
-  if (p.modo === "fija" && !(Number.isInteger(a.duracion) && a.duracion > 0)) e.push("la duración debe ser un número entero de días mayor que 0");
-  if (p.modo === "cantidad" && !(a.cantidad > 0)) e.push(`falta la cantidad en ${p.unidad} (mayor que 0)`);
-  if (p.modo === "ritmo") {
-    if (a.duracion !== null && !(Number.isInteger(a.duracion) && a.duracion > 0)) e.push("la duración debe ser un número entero de días mayor que 0");
-    (p.codigosUnidad || []).forEach((c) => { if (!a.codigos?.[c]) e.push(`falta el código de unidad ${c}`); });
-  }
-  const vistos = new Set();
-  (a.predecesoras || []).forEach((x) => {
-    if (x.id === a.id) e.push("no puede ser predecesora de sí misma");
-    else if (!ids.has(x.id)) e.push(`la predecesora ${x.id} no existe`);
-    if (vistos.has(x.id)) e.push(`la predecesora ${x.id} está repetida`);
-    vistos.add(x.id);
-  });
-  if (a.restriccion?.tipo && !a.restriccion.fecha) e.push("falta la fecha de la restricción");
-  Object.entries(a.codigos || {}).forEach(([c, v]) => {
-    const def = S.codigos.find((k) => k.codigo === c);
-    if (!def) e.push(`el código ${c} ya no existe`);
-    else if (!def.valores.some((x) => x.valor === v)) e.push(`el valor ${v} no existe en el código ${c}`);
-  });
-  return e;
-}
-function buscarCiclo(acts) {
-  const succ = new Map(acts.map((a) => [a.id, []]));
-  acts.forEach((a) => (a.predecesoras || []).forEach((x) => succ.get(x.id)?.push(a.id)));
-  const estado = new Map(), pila = [];
-  const dfs = (id) => {
-    estado.set(id, 1); pila.push(id);
-    for (const s of succ.get(id) || []) {
-      if (estado.get(s) === 1) return [...pila.slice(pila.indexOf(s)), s];
-      if (!estado.get(s)) { const c = dfs(s); if (c) return c; }
-    }
-    estado.set(id, 2); pila.pop(); return null;
-  };
-  for (const a of acts) if (!estado.get(a.id)) { const c = dfs(a.id); if (c) return c; }
-  return null;
-}
+const cap = (m) => m[0].toUpperCase() + m.slice(1);
+const validar = (a, ids) => validarActividad(a, ids, (pid) => S.partidas.get(pid), S.codigos);
 function problemas() {
   const acts = todas(), ids = new Set(acts.map((a) => a.id)), out = [];
   acts.forEach((a) => validar(a, ids).forEach((m) => out.push(`${a.id}: ${m}`)));
@@ -526,7 +481,7 @@ function modalActividad(orig, partidaSugerida) {
         if (!/^[A-Z0-9_]{1,12}-\d{4}$/.test(id)) errs.push("El ID debe ser partida + guion + 4 dígitos (ej. PINT-0001).");
         if (todasAct.some((x) => x.id === id)) errs.push(`Ya existe la actividad ${id}.`);
       }
-      const { lista, errs: ePred } = parsePredecesoras(g("predecesoras")); errs.push(...ePred);
+      const { lista, errs: ePred } = parsePredecesoras(g("predecesoras")); errs.push(...ePred.map((m) => cap(m) + "."));
       const codigos = {};
       S.codigos.forEach((c) => { const v = g("cod:" + c.codigo); if (v) codigos[c.codigo] = v; });
       const datos = {
@@ -540,7 +495,7 @@ function modalActividad(orig, partidaSugerida) {
       ["avance", "calc", "base"].forEach((k) => { if (datos[k] === undefined) datos[k] = null; });
       const resto = todasAct.filter((x) => x.id !== (orig?.id ?? id));
       const ids = new Set([...resto.map((x) => x.id), id]);
-      errs.push(...validar(datos, ids).map((m) => m[0].toUpperCase() + m.slice(1) + "."));
+      errs.push(...validar(datos, ids).map((m) => cap(m) + "."));
       if (!errs.length) {
         const ciclo = buscarCiclo([...resto, datos]);
         if (ciclo) errs.push(`Se formaría un ciclo lógico: ${ciclo.join(" → ")}.`);
@@ -718,4 +673,72 @@ async function exportarExcel() {
     toast(ok ? "Excel exportado con el cálculo actual" : "Excel exportado sin cálculo (hay problemas por corregir o no hay actividades)");
   } catch (e) { toast(errorMsg(e)); }
   finally { btn.disabled = false; btn.textContent = "Exportar a Excel"; }
+}
+
+// ---------- Importación desde Excel (programa vacío) ----------
+function importarExcel() {
+  if (S.partidas.size || S.codigos.length) {
+    openModal(`<h2>Importar desde Excel</h2>
+      <p>Este programa ya tiene ${S.codigos.length} código(s) y ${S.partidas.size} partida(s). Por ahora la importación solo carga programas vacíos;
+      la actualización de un programa con datos (re-importación) viene más adelante.</p>
+      <p>Para importar, crea un programa nuevo desde la lista de programas.</p>
+      <div class="modal-actions"><button class="btn btn-primary" value="cancel">Entendido</button></div>`, async () => {});
+    return;
+  }
+  let datos = null;
+  openModal(`
+    <h2>Importar desde Excel</h2>
+    <p class="help" style="margin:0">Carga en este programa las hojas Partidas, Códigos, Calendario (inicio, días laborales y feriados) y Actividades.
+      Primero se revisa el archivo; no se guarda nada hasta que presiones "Importar".</p>
+    <label>Archivo Excel<input type="file" name="archivo" accept=".xlsx,.xls"></label>
+    <div id="imp-res"></div>
+    <p class="msg-error" hidden></p>
+    <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button>
+      <button class="btn btn-secondary" value="revisar">Revisar archivo</button>
+      <button class="btn btn-primary" value="importar" id="btn-imp" disabled>Importar</button></div>`,
+    async (fd, form, sub) => {
+      if (sub?.value === "revisar") {
+        const f = fd.get("archivo");
+        if (!f || !f.size) throw new Error("Elige el archivo Excel.");
+        $("#imp-res", form).innerHTML = `<p class="help">Revisando…</p>`;
+        await cargarXLSX();
+        datos = leerExcel(await f.arrayBuffer());
+        let termino = null;
+        if (!datos.errores.length) {
+          const r = calcular({ actividades: datos.actividades, partidas: Object.fromEntries(datos.partidas.map((p) => [p.id, p])),
+            codigos: datos.codigos, programa: datos.programa, feriados: datos.feriados });
+          if (r.errores.length) datos.errores.push(...r.errores); else termino = r.termino;
+        }
+        const nVal = datos.codigos?.reduce((n, c) => n + c.valores.length, 0) || 0;
+        const E = datos.errores, A = datos.avisos;
+        $("#imp-res", form).innerHTML = `
+          ${E.length ? `<div class="issues"><span class="warn">${E.length} error(es): corrige el Excel y vuelve a revisarlo.</span>
+            <ul>${E.slice(0, 40).map((m) => `<li>${esc(m)}</li>`).join("")}${E.length > 40 ? `<li>… y ${E.length - 40} más</li>` : ""}</ul></div>`
+          : `<div class="calc-box">
+              <div><span class="help">Actividades</span><strong>${datos.actividades.length}</strong></div>
+              <div><span class="help">Partidas</span><strong>${datos.partidas.length}</strong></div>
+              <div><span class="help">Códigos (valores)</span><strong>${datos.codigos.length} (${nVal})</strong></div>
+              <div><span class="help">Feriados</span><strong>${datos.feriados.length}</strong></div>
+              <div><span class="help">Inicio</span><strong>${esc(fechaCL(datos.programa.fechaInicio))}</strong></div>
+              <div><span class="help">Calendario</span><strong>${esc(CALENDARIOS[datos.programa.calendario])}</strong></div>
+              <div><span class="help">Término estimado</span><strong>${esc(fechaCL(termino))}</strong></div></div>`}
+          ${A.length ? `<div class="help"><strong>Avisos:</strong><ul style="margin:4px 0 0;padding-left:18px">${A.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}`;
+        $("#btn-imp", form).disabled = E.length > 0;
+        return false;
+      }
+      if (sub?.value === "importar") {
+        if (!datos || datos.errores.length) throw new Error("Revisa el archivo antes de importar.");
+        if (S.partidas.size || S.codigos.length) throw new Error("El programa ya tiene datos; recarga la página.");
+        const db = CTX.db, b = writeBatch(db);
+        b.update(refProg(S.id), { fechaInicio: datos.programa.fechaInicio, calendario: datos.programa.calendario });
+        b.set(refDef(), { codigos: datos.codigos, feriados: datos.feriados }, { merge: true });
+        datos.partidas.forEach((p) => b.set(refPart(p.id), { ...p, actividades: datos.actividades.filter((a) => a.partida === p.id) }));
+        await b.commit();
+        const id = S.id; S = null;
+        toast(`Importadas ${datos.actividades.length} actividades. Presiona "Calcular programa".`);
+        const destino = `#programa/${id}/actividades`;
+        if (location.hash !== destino) location.hash = destino; else viewPrograma(CTX, id, "actividades");
+      }
+    },
+    (form) => { form.elements.archivo.onchange = () => { datos = null; $("#btn-imp", form).disabled = true; $("#imp-res", form).innerHTML = ""; }; });
 }

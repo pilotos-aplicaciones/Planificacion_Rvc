@@ -7,6 +7,9 @@ import { getFirestore, doc, getDoc, setDoc, updateDoc, addDoc, collection, getDo
 import { firebaseConfig } from "./firebase-config.js";
 import { $, $$, esc, ROLES, CALENDARIOS, toast, errorMsg, openModal } from "./util.js";
 import { viewPrograma, resetPrograma } from "./programa.js";
+import { VERSION, FECHA_VERSION } from "./version.js";
+
+document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${VERSION} (${FECHA_VERSION})`));
 
 const fb = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
