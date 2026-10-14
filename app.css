@@ -191,3 +191,5 @@ tr.av-dirty td { background: #FFF8E1; }
 .title-row h1 { margin: 0; }
 .title-row .calc-chip { margin-top: 0; }
 .g-base { fill: #6B7785; }
+td.chk, th:first-child input[type=checkbox] { cursor: pointer; }
+tr.sel td { background: #EEF3FB; }

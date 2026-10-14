@@ -483,8 +483,11 @@ function siguienteId(pid) {
 }
 
 // ---------- Actividades: vista ----------
+let SEL = new Set();   // actividades seleccionadas para edición masiva
 function tabActividades(el) {
   const ed = S.puedeEditar, parts = [...S.partidas.values()];
+  SEL = new Set([...SEL].filter((id) => todas().some((a) => a.id === id)));
+  let visibles = [];
   const probs = problemas();
   el.innerHTML = `
     <div class="toolbar">
@@ -493,12 +496,13 @@ function tabActividades(el) {
       <label class="help" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="f-criticas"> Solo críticas</label>
       <select id="f-orden"><option value="partida">Ordenar por partida</option><option value="inicio">Ordenar por inicio</option></select>
       <span class="spacer"></span>
-      ${ed ? `<button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
+      ${ed ? `<button id="btn-masivo" class="btn btn-secondary" disabled>Asignar códigos</button>
+        <button id="btn-nueva-act" class="btn btn-primary" ${parts.length ? "" : "disabled title='Crea primero una partida'"}>+ Nueva actividad</button>` : ""}
     </div>
     ${estadoCalculo()}
     ${probs.length ? `<div class="issues"><span class="warn">${probs.length} problema(s) por revisar</span><ul>${probs.slice(0, 15).map((m) => `<li>${esc(m)}</li>`).join("")}${probs.length > 15 ? `<li>… y ${probs.length - 15} más</li>` : ""}</ul></div>` : ""}
     <div class="table-wrap"><table>
-      <thead><tr><th>ID</th><th>Nombre</th><th>Partida</th><th class="num">Cantidad</th><th class="num">Duración (días)</th><th>Inicio</th><th>Término</th><th class="num" title="Holgura total (días)">HT</th><th class="num" title="Holgura libre (días)">HL</th><th>Predecesoras</th>
+      <thead><tr>${ed ? `<th style="width:34px"><input type="checkbox" id="sel-todas" title="Seleccionar las filtradas"></th>` : ""}<th>ID</th><th>Nombre</th><th>Partida</th><th class="num">Cantidad</th><th class="num">Duración (días)</th><th>Inicio</th><th>Término</th><th class="num" title="Holgura total (días)">HT</th><th class="num" title="Holgura libre (días)">HL</th><th>Predecesoras</th>
         ${S.codigos.map((c) => `<th title="${esc(c.descripcion || "")}">${esc(c.codigo)}</th>`).join("")}<th>Restricción</th></tr></thead>
       <tbody id="act-body"></tbody></table></div>`;
   const pintar = () => {
@@ -507,11 +511,12 @@ function tabActividades(el) {
     const filas = todas().filter((a) => (!fp || a.partida === fp) && (!fc || a.calc?.critica) && (!ft || a.id.toLowerCase().includes(ft) || (a.nombre || "").toLowerCase().includes(ft)))
       .sort((a, b) => porInicio ? (a.calc?.ie || "9").localeCompare(b.calc?.ie || "9") || a.id.localeCompare(b.id)
         : pos.get(a.partida) - pos.get(b.partida) || a.id.localeCompare(b.id));
+    visibles = filas.map((a) => a.id);
     $("#act-body").innerHTML = filas.map((a) => {
       const p = S.partidas.get(a.partida), dur = duracionEfectiva(a, p);
       const c = a.calc;
-      return `<tr class="${ed ? "link" : ""} ${c?.critica ? "critica" : ""}" data-id="${esc(a.id)}">
-        <td class="mono">${esc(a.id)}</td><td>${esc(a.nombre)}</td>
+      return `<tr class="${ed ? "link" : ""} ${c?.critica ? "critica" : ""} ${SEL.has(a.id) ? "sel" : ""}" data-id="${esc(a.id)}">
+        ${ed ? `<td class="chk"><input type="checkbox" class="sel-act" ${SEL.has(a.id) ? "checked" : ""}></td>` : ""}<td class="mono">${esc(a.id)}</td><td>${esc(a.nombre)}</td>
         <td><span class="swatch" style="background:${esc(p?.color || "#808080")}"></span>${esc(a.partida)}</td>
         <td class="num">${p?.modo === "cantidad" ? fmtNum(a.cantidad) + " " + esc(p.unidad) : ""}</td>
         <td class="num">${dur ?? `<span class="warn">?</span>`}${p?.modo === "cantidad" ? ' <span class="help">calc.</span>' : ""}</td>
@@ -520,9 +525,29 @@ function tabActividades(el) {
         <td>${esc(predText(a.predecesoras))}</td>
         ${S.codigos.map((c) => `<td>${esc(a.codigos?.[c.codigo] || "")}</td>`).join("")}
         <td>${a.restriccion?.tipo ? esc(RESTRICCIONES[a.restriccion.tipo] + " " + fechaCL(a.restriccion.fecha)) : ""}</td></tr>`;
-    }).join("") || `<tr><td colspan="${11 + S.codigos.length}" class="muted">${todas().length ? "Ninguna actividad coincide con el filtro." : "Aún no hay actividades."}</td></tr>`;
-    if (ed) $$("#act-body tr.link").forEach((tr) => (tr.onclick = () => modalActividad(todas().find((a) => a.id === tr.dataset.id))));
+    }).join("") || `<tr><td colspan="${12 + S.codigos.length}" class="muted">${todas().length ? "Ninguna actividad coincide con el filtro." : "Aún no hay actividades."}</td></tr>`;
+    if (ed) $$("#act-body tr.link").forEach((tr) => (tr.onclick = (ev) => {
+      if (ev.target.closest("td.chk")) return;
+      modalActividad(todas().find((a) => a.id === tr.dataset.id));
+    }));
+    if (ed) {
+      $$("#act-body .sel-act").forEach((c) => (c.onchange = () => {
+        const id = c.closest("tr").dataset.id; c.checked ? SEL.add(id) : SEL.delete(id);
+        c.closest("tr").classList.toggle("sel", c.checked); estadoSel();
+      }));
+      estadoSel();
+    }
   };
+  const estadoSel = () => {
+    const b = $("#btn-masivo"), t = $("#sel-todas");
+    b.disabled = !SEL.size; b.textContent = SEL.size ? `Asignar códigos (${SEL.size})` : "Asignar códigos";
+    const n = visibles.filter((id) => SEL.has(id)).length;
+    t.checked = n > 0 && n === visibles.length; t.indeterminate = n > 0 && n < visibles.length;
+  };
+  if (ed) {
+    $("#sel-todas").onchange = (e) => { visibles.forEach((id) => (e.target.checked ? SEL.add(id) : SEL.delete(id))); pintar(); };
+    $("#btn-masivo").onclick = () => asignarCodigosMasivo();
+  }
   $("#f-partida").onchange = pintar; $("#f-texto").oninput = pintar; $("#f-criticas").onchange = pintar; $("#f-orden").onchange = pintar;
   pintar();
   if (ed && parts.length) $("#btn-nueva-act").onclick = () => modalActividad(null, $("#f-partida").value);
@@ -921,4 +946,41 @@ function apiAvance() {
       nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
     },
   };
+}
+
+// ---------- Asignación masiva de códigos ----------
+function asignarCodigosMasivo() {
+  if (!S.codigos.length) return toast("No hay códigos definidos en el programa.");
+  const ids = [...SEL];
+  openModal(`
+    <h2>Asignar códigos a ${ids.length} actividad(es)</h2>
+    <p class="help" style="margin:0">Solo cambian los códigos que elijas; los marcados "No cambiar" quedan como están en cada actividad.</p>
+    <div class="grid2">${S.codigos.map((c) => `<label title="${esc(c.descripcion || "")}">${esc(c.codigo)}
+      <select name="cod:${esc(c.codigo)}"><option value="__keep">No cambiar</option><option value="__del">Quitar valor</option>
+      ${c.valores.map((v) => `<option value="${esc(v.valor)}">${esc(v.valor)}${v.descripcion ? " – " + esc(v.descripcion) : ""}</option>`).join("")}</select></label>`).join("")}</div>
+    <p class="msg-error" hidden></p>
+    <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary">Aplicar</button></div>`,
+    async (fd) => {
+      const cambios = S.codigos.map((c) => [c.codigo, fd.get("cod:" + c.codigo)]).filter(([, v]) => v !== "__keep");
+      if (!cambios.length) throw new Error("No elegiste ningún cambio.");
+      const aplicar = (a) => {
+        const cod = { ...(a.codigos || {}) };
+        cambios.forEach(([c, v]) => { if (v === "__del") delete cod[c]; else cod[c] = v; });
+        return { ...a, codigos: cod };
+      };
+      const todasAct = todas(), ids0 = new Set(todasAct.map((a) => a.id)), errs = [];
+      ids.forEach((id) => { const a = aplicar(todasAct.find((x) => x.id === id)); validar(a, ids0).forEach((m) => errs.push(`${id}: ${m}`)); });
+      if (errs.length) throw new Error(`No se aplicó ningún cambio:\n${errs.slice(0, 8).join("\n")}${errs.length > 8 ? `\n… y ${errs.length - 8} más` : ""}`);
+      const resumen = cambios.map(([c, v]) => `${c}: ${v === "__del" ? "quitar" : v}`).join(", ");
+      if (!confirm(`Se modificarán ${ids.length} actividad(es).\n${resumen}\n\n¿Confirmar?`)) return false;
+      const batch = writeBatch(CTX.db), nuevas = new Map(), sel = new Set(ids);
+      for (const pt of S.partidas.values()) {
+        if (!pt.actividades.some((a) => sel.has(a.id))) continue;
+        const arr = pt.actividades.map((a) => (sel.has(a.id) ? aplicar(a) : a));
+        nuevas.set(pt.id, arr); batch.update(refPart(pt.id), { actividades: arr });
+      }
+      await batch.commit();
+      nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+      SEL = new Set(); render(); toast(`Códigos asignados a ${ids.length} actividad(es)`);
+    });
 }
