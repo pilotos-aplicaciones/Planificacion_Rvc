@@ -5,6 +5,7 @@ import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, er
 import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./cpm.js";
 import { parsePredecesoras, predText, validarActividad, buscarCiclo } from "./validacion.js";
 import { leerExcel } from "./importar.js";
+import { tabGantt } from "./gantt.js";
 
 let S = null;   // estado del programa abierto
 let CTX = null;
@@ -20,7 +21,7 @@ export async function viewPrograma(ctx, id, tab) {
     catch (e) { main.lastElementChild.outerHTML = `<p class="msg-error">${esc(errorMsg(e))}</p>`; return; }
     if (!S) { main.lastElementChild.outerHTML = `<p class="msg-error">El programa no existe o fue eliminado.</p>`; return; }
   }
-  S.tab = ["resumen", "codigos", "partidas", "actividades"].includes(tab) ? tab : "resumen";
+  S.tab = ["resumen", "codigos", "partidas", "actividades", "gantt"].includes(tab) ? tab : "resumen";
   render();
 }
 
@@ -43,6 +44,7 @@ async function cargar(id) {
     id, prog, partidas, tab: "resumen",
     codigos: dSnap.exists() ? dSnap.data().codigos || [] : [],
     feriados: dSnap.exists() ? dSnap.data().feriados || [] : [],
+    layouts: dSnap.exists() ? dSnap.data().layouts || [] : [],
     usuarios: me.admin ? await CTX.loadUsuarios() : [],
     puedeEditar: me.admin || prog.miembros?.[me.uid] === "editor",
   };
@@ -77,7 +79,7 @@ function render() {
   const p = S.prog, me = CTX.me, miRol = p.miembros?.[me.uid];
   const nAct = todas().length;
   const tabs = [["resumen", "Resumen", ""], ["codigos", "Códigos", S.codigos.length],
-    ["partidas", "Partidas", S.partidas.size], ["actividades", "Actividades", nAct]];
+    ["partidas", "Partidas", S.partidas.size], ["actividades", "Actividades", nAct], ["gantt", "Gantt", ""]];
   $("#main").innerHTML = `
     <a href="#programas" class="back">‹ Programas</a>
     <div class="page-head">
@@ -95,7 +97,7 @@ function render() {
   $("#btn-exportar").onclick = exportarExcel;
   if (S.puedeEditar) $("#btn-importar").onclick = importarExcel;
   $("#btn-recargar").onclick = () => { const t = S.tab; S = null; viewPrograma(CTX, location.hash.split("/")[1], t); };
-  ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades })[S.tab]($("#tab"));
+  ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades, gantt: (el) => tabGantt(el, apiGantt()) })[S.tab]($("#tab"));
 }
 
 // ---------- Resumen y miembros ----------
@@ -803,4 +805,13 @@ function importarExcel() {
       }
     },
     (form) => { form.elements.archivo.onchange = () => { datos = null; $("#btn-imp", form).disabled = true; $("#imp-res", form).innerHTML = ""; }; });
+}
+
+// ---------- Puente con el Gantt ----------
+function apiGantt() {
+  return {
+    S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar,
+    abrirActividad: (a) => modalActividad(a),
+    guardarLayouts: async (lista) => { await setDoc(refDef(), { layouts: lista }, { merge: true }); S.layouts = lista; },
+  };
 }
