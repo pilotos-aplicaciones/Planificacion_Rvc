@@ -50,14 +50,27 @@ export function relacionesRitmo(actividades, partidas, codigos) {
   return rel;
 }
 
+// Duración remanente de una actividad en curso (días hábiles, mínimo 1).
+export function duracionRemanente(a, p, dur, transcurridos) {
+  const av = a.avance || {};
+  if (p?.modo === "fija" && av.pct !== null && av.pct !== undefined && av.pct !== "") return Math.max(1, Math.ceil(dur * (1 - Number(av.pct) / 100) - 1e-9));
+  if (p?.modo === "cantidad" && av.ejecutado !== null && av.ejecutado !== undefined && av.ejecutado !== "" && p.rendimiento > 0)
+    return Math.max(1, Math.ceil((a.cantidad - Number(av.ejecutado)) / p.rendimiento - 1e-9));
+  return Math.max(1, dur - transcurridos);
+}
+
 export function calcular({ actividades, partidas, codigos, programa, feriados }) {
   const cal = crearCalendario(programa.fechaInicio, programa.calendario, feriados);
   const errores = [];
+  const corte = programa.fechaCorte || null;
+  const Wfin = (f) => cal.W(cal.sumarDia(f));   // fin exclusivo tras el día f
+  const dd = corte ? Wfin(corte) : 0;           // primer día hábil después del corte
   const N = new Map();
   actividades.forEach((a) => {
-    const dur = duracionEfectiva(a, partidas[a.partida]);
+    const p = partidas[a.partida], dur = duracionEfectiva(a, p);
     if (!(dur >= 1)) errores.push(`${a.id}: no tiene duración válida.`);
-    N.set(a.id, { a, dur: dur || 1, pred: [], succ: [] });
+    const estado = corte && ["curso", "term"].includes(a.avance?.estado) ? a.avance.estado : "no";
+    N.set(a.id, { a, p, dur: dur || 1, estado, pred: [], succ: [] });
   });
   const rels = [];
   actividades.forEach((a) => (a.predecesoras || []).forEach((x) => {
@@ -68,7 +81,6 @@ export function calcular({ actividades, partidas, codigos, programa, feriados })
   rels.push(...rRitmo);
   rels.forEach((r) => { N.get(r.de).succ.push(r); N.get(r.a).pred.push(r); });
 
-  // Orden topológico (Kahn)
   const grado = new Map([...N.keys()].map((k) => [k, N.get(k).pred.length]));
   const cola = [...N.keys()].filter((k) => !grado.get(k)), orden = [];
   while (cola.length) { const k = cola.shift(); orden.push(k); N.get(k).succ.forEach((r) => { grado.set(r.a, grado.get(r.a) - 1); if (!grado.get(r.a)) cola.push(r.a); }); }
@@ -78,34 +90,59 @@ export function calcular({ actividades, partidas, codigos, programa, feriados })
   }
   if (errores.length) return { errores };
 
-  const Wfin = (f) => cal.W(cal.sumarDia(f));   // fin exclusivo tras el día f
-  // Pasada hacia adelante
+  // Pasada hacia adelante. esL = inicio "lógico" (real si ya partió) para relaciones II.
   for (const k of orden) {
-    const n = N.get(k), r = n.a.restriccion;
-    let es = 0;
-    n.pred.forEach((p) => { const m = N.get(p.de); es = Math.max(es, p.tipo === "SS" ? m.es + p.desfase : m.ef + p.desfase); });
-    if (r?.tipo === "SNET") es = Math.max(es, cal.W(r.fecha));
-    if (r?.tipo === "MSO") es = cal.W(r.fecha);
-    if (r?.tipo === "MFO") es = Wfin(r.fecha) - n.dur;
-    n.es = es; n.ef = es + n.dur;
+    const n = N.get(k), r = n.a.restriccion, av = n.a.avance || {};
+    if (n.estado === "term") { n.es = n.esL = cal.W(av.inicioReal); n.ef = Wfin(av.terminoReal); n.rem = 0; continue; }
+    let es = dd;
+    n.pred.forEach((p) => {
+      const m = N.get(p.de);
+      if (n.estado === "curso" && p.tipo === "SS") return;        // ya partió: la relación II está cumplida
+      es = Math.max(es, p.tipo === "SS" ? m.esL + p.desfase : m.ef + p.desfase);
+    });
+    if (n.estado === "curso") {
+      n.esL = cal.W(av.inicioReal);
+      n.rem = duracionRemanente(n.a, n.p, n.dur, Math.max(0, dd - n.esL));
+    } else {
+      if (r?.tipo === "SNET") es = Math.max(es, cal.W(r.fecha));
+      if (r?.tipo === "MSO") es = cal.W(r.fecha);
+      if (r?.tipo === "MFO") es = Wfin(r.fecha) - n.dur;
+      n.esL = es; n.rem = n.dur;
+    }
+    n.es = es; n.ef = es + n.rem;
   }
   const fin = Math.max(...[...N.values()].map((n) => n.ef));
-  // Pasada hacia atrás
+  // Pasada hacia atrás (las terminadas no participan)
   for (const k of [...orden].reverse()) {
     const n = N.get(k), r = n.a.restriccion;
+    if (n.estado === "term") { n.ls = n.es; n.lf = n.ef; continue; }
     let lf = fin;
-    n.succ.forEach((s) => { const m = N.get(s.a); lf = Math.min(lf, s.tipo === "SS" ? m.ls - s.desfase + n.dur : m.ls - s.desfase); });
+    n.succ.forEach((s) => {
+      const m = N.get(s.a);
+      if (m.estado === "term") return;
+      if (s.tipo === "SS") { if (n.estado === "curso" || m.estado === "curso") return; lf = Math.min(lf, m.ls - s.desfase + n.rem); }
+      else lf = Math.min(lf, m.ls - s.desfase);
+    });
     if (r?.tipo === "FNLT") lf = Math.min(lf, Wfin(r.fecha));
-    if (r?.tipo === "MFO") lf = Wfin(r.fecha);
-    if (r?.tipo === "MSO") lf = cal.W(r.fecha) + n.dur;
-    n.lf = lf; n.ls = lf - n.dur;
+    if (r?.tipo === "MFO" && n.estado === "no") lf = Wfin(r.fecha);
+    if (r?.tipo === "MSO" && n.estado === "no") lf = cal.W(r.fecha) + n.dur;
+    n.lf = lf; n.ls = lf - n.rem;
   }
-  // Holguras y fechas
+  // Resultados
   const res = new Map();
   for (const [k, n] of N) {
+    const av = n.a.avance || {};
+    if (n.estado === "term") {
+      res.set(k, { dur: n.dur, rem: 0, estado: "term", ie: av.inicioReal, te: av.terminoReal, it: null, tt: null, ht: null, hl: null, critica: false, es: n.es, ls: n.es });
+      continue;
+    }
     const ht = n.ls - n.es;
-    const hl = n.succ.length ? Math.min(...n.succ.map((s) => { const m = N.get(s.a); return s.tipo === "SS" ? m.es - s.desfase - n.es : m.es - s.desfase - n.ef; })) : fin - n.ef;
-    res.set(k, { dur: n.dur, ie: cal.fecha(n.es), te: cal.fecha(n.ef - 1), it: cal.fecha(n.ls), tt: cal.fecha(n.lf - 1), ht, hl, critica: ht <= 0, es: n.es, ls: n.ls });
+    const sucs = n.succ.filter((s) => N.get(s.a).estado !== "term" && !(s.tipo === "SS" && (n.estado === "curso" || N.get(s.a).estado === "curso")));
+    const hl = sucs.length ? Math.min(...sucs.map((s) => { const m = N.get(s.a); return s.tipo === "SS" ? m.es - s.desfase - n.esL : m.es - s.desfase - n.ef; })) : fin - n.ef;
+    res.set(k, { dur: n.dur, rem: n.rem, estado: n.estado,
+      ie: n.estado === "curso" ? av.inicioReal : cal.fecha(n.es), te: cal.fecha(n.ef - 1),
+      ir: n.estado === "curso" ? cal.fecha(n.es) : null,   // inicio del remanente
+      it: cal.fecha(n.ls), tt: cal.fecha(n.lf - 1), ht, hl, critica: ht <= 0, es: n.es, ls: n.ls });
   }
-  return { errores: [], res, termino: cal.fecha(fin - 1), duracionTotal: fin, relacionesRitmo: rRitmo.length };
+  return { errores: [], res, termino: cal.fecha(fin - 1), duracionTotal: fin, relacionesRitmo: rRitmo.length, corte };
 }

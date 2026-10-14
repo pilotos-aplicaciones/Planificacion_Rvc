@@ -185,8 +185,12 @@ function dibujar(L, escala) {
       fondo += `<line x1="${x}" y1="0" x2="${x}" y2="${H}" class="g-vline"/>`;
     }
   }
-  const hoy = hoyISO();
+  const hoy = hoyISO(), corte = S.prog.fechaCorte;
   if (toT(hoy) >= t0 && toT(hoy) <= t1) fondo += `<line x1="${X(hoy)}" y1="0" x2="${X(hoy)}" y2="${H}" class="g-hoy"/>`;
+  if (corte && toT(corte) >= t0 && toT(corte) <= t1) {
+    fondo += `<line x1="${X(corte) + ppd}" y1="0" x2="${X(corte) + ppd}" y2="${H}" class="g-corte"/>`;
+    head += `<text x="${X(corte) + ppd + 3}" y="${HH - 3}" class="g-corte-t">corte</text>`;
+  }
 
   // Filas
   let izq = "", barras = "", relaciones = "";
@@ -209,7 +213,7 @@ function dibujar(L, escala) {
       switch (col.k) {
         case "id": return esc(a.id); case "nombre": return esc(a.nombre); case "partida": return esc(a.partida);
         case "dur": return duracionEfectiva(a, p) ?? ""; case "ie": return corta(c?.ie); case "te": return corta(c?.te);
-        case "ht": return c ? c.ht : ""; case "hl": return c ? c.hl : ""; case "pred": return esc(predText(a.predecesoras));
+        case "ht": return c?.ht ?? ""; case "hl": return c?.hl ?? ""; case "pred": return esc(predText(a.predecesoras));
       }
       return esc(a.codigos?.[col.k.slice(4)] || "");
     };
@@ -217,12 +221,16 @@ function dibujar(L, escala) {
       `<span class="${col.num ? "num" : ""}" style="width:${col.w}px;${j === 0 ? `padding-left:${8 + f.nivel * 14}px` : ""}" title="${col.k === "pred" || col.k === "nombre" ? celda(col) : ""}">${celda(col)}</span>`).join("")}</div>`;
     if (!c) return;
     const x1 = X(c.ie), x2 = X(c.te) + ppd;
-    const color = c.critica ? "var(--critical)" : (op.color === "uniforme" ? "var(--plan)" : (p?.color || "#808080"));
+    const color = c.estado === "term" ? "#A3ADB8" : c.critica ? "var(--critical)" : (op.color === "uniforme" ? "var(--plan)" : (p?.color || "#808080"));
     if (op.holgura && c.ht > 0 && c.tt) {
       const xf = X(c.tt) + ppd;
       barras += `<line x1="${x2}" y1="${mid}" x2="${xf}" y2="${mid}" class="g-float"/><line x1="${xf}" y1="${mid - 4}" x2="${xf}" y2="${mid + 4}" class="g-float"/>`;
     }
-    barras += `<rect x="${x1}" y="${y + 7}" width="${Math.max(2, x2 - x1)}" height="${RH - 14}" rx="2" fill="${color}" class="g-bar" data-id="${esc(a.id)}"><title>${esc(a.id)} ${esc(a.nombre)}\n${corta(c.ie)} a ${corta(c.te)}  ·  HT ${c.ht}</title></rect>`;
+    barras += `<rect x="${x1}" y="${y + 7}" width="${Math.max(2, x2 - x1)}" height="${RH - 14}" rx="2" fill="${color}" class="g-bar" data-id="${esc(a.id)}"><title>${esc(a.id)} ${esc(a.nombre)}\n${corta(c.ie)} a ${corta(c.te)}${c.estado === "term" ? "  ·  terminada" : `  ·  HT ${c.ht}`}${c.estado === "curso" ? "  ·  en curso" : ""}</title></rect>`;
+    if (c.estado === "curso" && corte) {
+      const xc = Math.min(X(corte) + ppd, x2);
+      if (xc > x1) barras += `<rect x="${x1}" y="${y + 10}" width="${xc - x1}" height="${RH - 20}" class="g-prog" pointer-events="none"/>`;
+    }
     if (op.relaciones) (a.predecesoras || []).forEach((r) => {
       const j = filaDe.get(r.id), pc = calcDe.get(r.id);
       if (j === undefined || !pc) return;

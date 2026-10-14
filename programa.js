@@ -6,6 +6,7 @@ import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./
 import { parsePredecesoras, predText, validarActividad, buscarCiclo } from "./validacion.js";
 import { leerExcel } from "./importar.js";
 import { tabGantt } from "./gantt.js";
+import { tabAvance, validarAvance } from "./avance.js";
 
 let S = null;   // estado del programa abierto
 let CTX = null;
@@ -21,7 +22,7 @@ export async function viewPrograma(ctx, id, tab) {
     catch (e) { main.lastElementChild.outerHTML = `<p class="msg-error">${esc(errorMsg(e))}</p>`; return; }
     if (!S) { main.lastElementChild.outerHTML = `<p class="msg-error">El programa no existe o fue eliminado.</p>`; return; }
   }
-  S.tab = ["resumen", "codigos", "partidas", "actividades", "gantt"].includes(tab) ? tab : "resumen";
+  S.tab = ["resumen", "codigos", "partidas", "actividades", "gantt", "avance"].includes(tab) ? tab : "resumen";
   render();
 }
 
@@ -62,12 +63,12 @@ const fechaCorta = (iso) => (iso ? `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso
 // Firma de los datos que afectan el cálculo: si cambia, el cálculo guardado está desactualizado.
 function firma() {
   const datos = JSON.stringify({
-    f: S.prog.fechaInicio, c: S.prog.calendario, fer: S.feriados.map((x) => x.fecha).sort(),
+    f: S.prog.fechaInicio, c: S.prog.calendario, corte: S.prog.fechaCorte || null, fer: S.feriados.map((x) => x.fecha).sort(),
     cod: S.codigos.map((c) => [c.codigo, c.valores.map((v) => v.valor)]),
     p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion, p.modo === "ritmo" ? p.duracionUnidad || 1 : null]).sort(),
     a: todas().map((a) => JSON.stringify([a.id, a.partida, a.cantidad, a.duracion,
       (a.predecesoras || []).map((x) => [x.id, x.tipo, Number(x.desfase) || 0]),
-      a.restriccion, Object.entries(a.codigos || {}).sort()])).sort(),
+      a.restriccion, Object.entries(a.codigos || {}).sort(), a.avance || null])).sort(),
   });
   let h = 5381; for (let i = 0; i < datos.length; i++) h = ((h << 5) + h + datos.charCodeAt(i)) | 0;
   return (h >>> 0).toString(16);
@@ -79,7 +80,7 @@ function render() {
   const p = S.prog, me = CTX.me, miRol = p.miembros?.[me.uid];
   const nAct = todas().length;
   const tabs = [["resumen", "Resumen", ""], ["codigos", "Códigos", S.codigos.length],
-    ["partidas", "Partidas", S.partidas.size], ["actividades", "Actividades", nAct], ["gantt", "Gantt", ""]];
+    ["partidas", "Partidas", S.partidas.size], ["actividades", "Actividades", nAct], ["gantt", "Gantt", ""], ["avance", "Avance", ""]];
   $("#main").innerHTML = `
     <a href="#programas" class="back">‹ Programas</a>
     <div class="page-head">
@@ -97,7 +98,7 @@ function render() {
   $("#btn-exportar").onclick = exportarExcel;
   if (S.puedeEditar) $("#btn-importar").onclick = importarExcel;
   $("#btn-recargar").onclick = () => { const t = S.tab; S = null; viewPrograma(CTX, location.hash.split("/")[1], t); };
-  ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades, gantt: (el) => tabGantt(el, apiGantt()) })[S.tab]($("#tab"));
+  ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades, gantt: (el) => tabGantt(el, apiGantt()), avance: (el) => tabAvance(el, apiAvance()) })[S.tab]($("#tab"));
 }
 
 // ---------- Resumen y miembros ----------
@@ -410,6 +411,7 @@ const validar = (a, ids) => validarActividad(a, ids, (pid) => S.partidas.get(pid
 function problemas() {
   const acts = todas(), ids = new Set(acts.map((a) => a.id)), out = [];
   acts.forEach((a) => validar(a, ids).forEach((m) => out.push(`${a.id}: ${m}`)));
+  acts.forEach((a) => validarAvance(a, S.partidas.get(a.partida), S.prog.fechaCorte).forEach((m) => out.push(`${a.id} (avance): ${m}`)));
   const ciclo = buscarCiclo(acts);
   if (ciclo) out.push(`Ciclo lógico: ${ciclo.join(" → ")}`);
   return out;
@@ -455,7 +457,7 @@ function tabActividades(el) {
         <td class="num">${p?.modo === "cantidad" ? fmtNum(a.cantidad) + " " + esc(p.unidad) : ""}</td>
         <td class="num">${dur ?? `<span class="warn">?</span>`}${p?.modo === "cantidad" ? ' <span class="help">calc.</span>' : ""}</td>
         <td class="mono">${esc(fechaCorta(c?.ie))}</td><td class="mono">${esc(fechaCorta(c?.te))}</td>
-        <td class="num ${c && c.ht <= 0 ? "warn" : ""}">${c ? c.ht : ""}</td><td class="num">${c ? c.hl : ""}</td>
+        <td class="num ${c && c.ht !== null && c.ht <= 0 ? "warn" : ""}">${c?.ht ?? (c?.estado === "term" ? '<span class="help">term.</span>' : "")}</td><td class="num">${c?.hl ?? ""}</td>
         <td>${esc(predText(a.predecesoras))}</td>
         ${S.codigos.map((c) => `<td>${esc(a.codigos?.[c.codigo] || "")}</td>`).join("")}
         <td>${a.restriccion?.tipo ? esc(RESTRICCIONES[a.restriccion.tipo] + " " + fechaCL(a.restriccion.fecha)) : ""}</td></tr>`;
@@ -605,6 +607,7 @@ function estadoCalculo() {
     <div><span class="help">Término del programa</span><strong>${esc(fechaCL(k.termino))}</strong></div>
     <div><span class="help">Duración</span><strong>${k.duracion} días hábiles</strong></div>
     <div><span class="help">Actividades críticas</span><strong>${k.criticas}</strong></div>
+    <div><span class="help">Fecha de corte</span><strong>${k.corte ? esc(fechaCL(k.corte)) : "Sin corte"}</strong></div>
     <div><span class="help">Calculado</span><strong>${esc(cuando)}</strong></div>
     ${vigente ? "" : `<p class="warn" style="margin:0;flex-basis:100%">Hubo cambios después del último cálculo. ${S.puedeEditar ? "Presiona \"Calcular programa\" para actualizar." : "Pide al editor que recalcule."}</p>`}
   </div>`;
@@ -612,8 +615,8 @@ function estadoCalculo() {
 
 async function calcularPrograma() {
   const probs = problemas();
-  if (probs.length) return toast("Corrige los problemas indicados antes de calcular.");
-  const btn = $("#btn-calcular"); btn.disabled = true; btn.textContent = "Calculando…";
+  if (probs.length) return toast(`Corrige los problemas antes de calcular: ${probs[0]}${probs.length > 1 ? ` (y ${probs.length - 1} más)` : ""}`);
+  const btn = $("#btn-calcular"); if (btn) { btn.disabled = true; btn.textContent = "Calculando…"; }
   try {
     const r = calcular({ actividades: todas(), partidas: Object.fromEntries(S.partidas), codigos: S.codigos, programa: S.prog, feriados: S.feriados });
     if (r.errores.length) {
@@ -623,17 +626,17 @@ async function calcularPrograma() {
     }
     const batch = writeBatch(CTX.db), nuevas = new Map();
     for (const p of S.partidas.values()) {
-      const arr = p.actividades.map((a) => { const x = r.res.get(a.id); return { ...a, calc: { dur: x.dur, ie: x.ie, te: x.te, it: x.it, tt: x.tt, ht: x.ht, hl: x.hl, critica: x.critica } }; });
+      const arr = p.actividades.map((a) => { const x = r.res.get(a.id); return { ...a, calc: { dur: x.dur, rem: x.rem, estado: x.estado, ir: x.ir || null, ie: x.ie, te: x.te, it: x.it, tt: x.tt, ht: x.ht, hl: x.hl, critica: x.critica } }; });
       nuevas.set(p.id, arr); batch.update(refPart(p.id), { actividades: arr });
     }
     const criticas = [...r.res.values()].filter((x) => x.critica).length;
-    const calculo = { fecha: new Date().toISOString(), termino: r.termino, duracion: r.duracionTotal, criticas, firma: firma(), por: CTX.me.uid };
+    const calculo = { fecha: new Date().toISOString(), termino: r.termino, duracion: r.duracionTotal, criticas, corte: S.prog.fechaCorte || null, firma: firma(), por: CTX.me.uid };
     batch.update(refProg(S.id), { calculo });
     await batch.commit();
     nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
     S.prog.calculo = calculo;
     render(); toast(`Programa calculado: término ${fechaCL(r.termino)}`);
-  } catch (e) { toast(errorMsg(e)); btn.disabled = false; btn.textContent = "Calcular programa"; }
+  } catch (e) { toast(errorMsg(e)); if (btn) { btn.disabled = false; btn.textContent = "Calcular programa"; } }
 }
 
 // ---------- Exportación a Excel ----------
@@ -676,7 +679,8 @@ async function exportarExcel() {
     const cab = ["ID", "Nombre", "Partida", "Modo", "Cantidad", "Unidad", "Rendimiento diario", "Ritmo (unid/día)", "Duración (días)",
       "Predecesoras", ...cods, "Tipo restricción", "Fecha restricción",
       "Día IT (n° hábil)", "Día TT (exclusivo)", "Día IT tardío", "Día TT tardío (exclusivo)",
-      "Inicio temprano", "Término temprano", "Inicio tardío", "Término tardío", "Holgura total", "Holgura libre", "Crítica"];
+      "Inicio temprano", "Término temprano", "Inicio tardío", "Término tardío", "Holgura total", "Holgura libre", "Crítica",
+      "Estado", "Inicio real", "Término real", "% avance", "Cantidad ejecutada", "Duración remanente"];
     const filas = [cab, ...acts.map((a) => {
       const p = partidas[a.partida], x = ok ? r.res.get(a.id) : null;
       return [a.id, a.nombre, a.partida, MODOS[p?.modo] || "", a.cantidad ?? "", p?.modo === "cantidad" ? p.unidad : "",
@@ -684,11 +688,13 @@ async function exportarExcel() {
         predText(a.predecesoras), ...cods.map((c) => a.codigos?.[c] || ""),
         a.restriccion?.tipo ? RESTRICCIONES[a.restriccion.tipo] : "", aFecha(a.restriccion?.fecha),
         x ? x.es : "", x ? x.es + x.dur : "", x ? x.ls : "", x ? x.ls + x.dur : "",
-        aFecha(x?.ie), aFecha(x?.te), aFecha(x?.it), aFecha(x?.tt), x ? x.ht : "", x ? x.hl : "", x ? (x.critica ? "Sí" : "No") : ""];
+        aFecha(x?.ie), aFecha(x?.te), aFecha(x?.it), aFecha(x?.tt), x?.ht ?? "", x?.hl ?? "", x ? (x.critica ? "Sí" : "No") : "",
+        { no: "No iniciada", curso: "En curso", term: "Terminada" }[a.avance?.estado || "no"], aFecha(a.avance?.inicioReal), aFecha(a.avance?.terminoReal),
+        a.avance?.pct ?? "", a.avance?.ejecutado ?? "", x ? x.rem : ""];
     })];
     const b = 10 + cods.length; // primera columna después de los códigos
     hoja("Actividades", filas, [12, 30, 9, 13, 9, 7, 10, 9, 9, 28, ...cods.map(() => 8), 20, 12, 9, 9, 9, 9, 12, 12, 12, 12, 8, 8, 7],
-      [b + 1, b + 6, b + 7, b + 8, b + 9]);
+      [b + 1, b + 6, b + 7, b + 8, b + 9, b + 14, b + 15]);
 
     // 2. Relaciones (lógica + ritmo)
     const rel = [["Predecesora", "Sucesora", "Tipo", "Desfase (días hábiles)", "Origen"]];
@@ -703,8 +709,10 @@ async function exportarExcel() {
 
     // 4. Calendario
     hoja("Calendario", [["Parámetro", "Valor"], ["Programa", S.prog.nombre], ["Fecha de inicio", aFecha(S.prog.fechaInicio)],
-      ["Calendario", CALENDARIOS[S.prog.calendario]], ["Término calculado", ok ? aFecha(r.termino) : "Sin calcular"], [],
+      ["Calendario", CALENDARIOS[S.prog.calendario]], ["Fecha de corte", S.prog.fechaCorte ? aFecha(S.prog.fechaCorte) : "Sin corte"],
+      ["Término calculado", ok ? aFecha(r.termino) : "Sin calcular"], [],
       ["Convención", "Día 0 = primer día hábil desde la fecha de inicio. TT = IT + duración (exclusivo): la actividad ocupa los días IT a TT-1."],
+      ["Avance", "Terminadas: fijas en fechas reales. En curso: remanente desde el día hábil siguiente al corte (lógica retenida). No iniciadas: no antes del día siguiente al corte."],
       ["FI", "Sucesora: IT ≥ TT de la predecesora + desfase"], ["II", "Sucesora: IT ≥ IT de la predecesora + desfase"],
       ["Desfase", "En días hábiles; puede ser negativo (traslape). Texto: CERA-0001 FI+2, TABI-0002 II-1"],
       ["Ritmo", "Unidad k de una partida: desfase acumulado = ENTERO((k-1)/ritmo), ordenadas por los códigos de unidad"], [],
@@ -813,5 +821,24 @@ function apiGantt() {
     S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar,
     abrirActividad: (a) => modalActividad(a),
     guardarLayouts: async (lista) => { await setDoc(refDef(), { layouts: lista }, { merge: true }); S.layouts = lista; },
+  };
+}
+
+function apiAvance() {
+  return {
+    S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar, render,
+    recalcular: () => calcularPrograma(),
+    primerDiaTrasCorte: () => { const cal = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados); return cal.fecha(cal.W(cal.sumarDia(S.prog.fechaCorte))); },
+    guardarCorte: async (f) => { await updateDoc(refProg(S.id), { fechaCorte: f }); S.prog.fechaCorte = f; render(); },
+    guardarAvance: async (cambios) => {
+      const batch = writeBatch(CTX.db), nuevas = new Map();
+      for (const p of S.partidas.values()) {
+        if (!p.actividades.some((a) => cambios.has(a.id))) continue;
+        const arr = p.actividades.map((a) => (cambios.has(a.id) ? { ...a, avance: cambios.get(a.id) } : a));
+        nuevas.set(p.id, arr); batch.update(refPart(p.id), { actividades: arr });
+      }
+      await batch.commit();
+      nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+    },
   };
 }

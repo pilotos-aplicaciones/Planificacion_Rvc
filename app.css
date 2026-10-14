@@ -176,3 +176,11 @@ tr.critica td:first-child { box-shadow: inset 3px 0 0 var(--critical); color: va
 .g-rel { fill: none; stroke: #8A96A3; stroke-width: 1; } .g-rel.crit { stroke: var(--critical); }
 .chk-grid { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .chk-grid label { display: flex !important; gap: 6px; align-items: center; font-weight: 400 !important; }
+
+/* ---- Avance ---- */
+.av-table td { padding: 6px 10px; }
+.av-table input[type=date] { width: 140px; }
+tr.av-dirty td { background: #FFF8E1; }
+.g-corte { stroke: #B7791F; stroke-width: 1.5; }
+.g-corte-t { font-size: 10px; fill: #B7791F; font-weight: 600; }
+.g-prog { fill: #1C2B3A; opacity: .55; }
