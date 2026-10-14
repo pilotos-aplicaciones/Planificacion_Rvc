@@ -36,6 +36,11 @@ async function cargar(id) {
   const pSnap = await getDoc(refProg(id));
   if (!pSnap.exists()) return null;
   const prog = pSnap.data();
+  let base = null;
+  if (prog.lineaBaseActiva) {
+    const b = await getDoc(doc(db, "programas", id, "lineasBase", prog.lineaBaseActiva));
+    if (b.exists()) base = { id: b.id, ...b.data() };
+  }
   const [dSnap, parts] = await Promise.all([
     getDoc(doc(db, "programas", id, "definiciones", "actual")),
     getDocs(collection(db, "programas", id, "partidas")),
@@ -46,6 +51,7 @@ async function cargar(id) {
     codigos: dSnap.exists() ? dSnap.data().codigos || [] : [],
     feriados: dSnap.exists() ? dSnap.data().feriados || [] : [],
     layouts: dSnap.exists() ? dSnap.data().layouts || [] : [],
+    base,
     usuarios: me.admin ? await CTX.loadUsuarios() : [],
     puedeEditar: me.admin || prog.miembros?.[me.uid] === "editor",
   };
@@ -84,7 +90,7 @@ function render() {
   $("#main").innerHTML = `
     <a href="#programas" class="back">‹ Programas</a>
     <div class="page-head">
-      <div><h1>${esc(p.nombre)}</h1><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p>${chipCalculo()}</div>
+      <div><div class="title-row"><h1>${esc(p.nombre)}</h1>${chipCalculo()}</div><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p></div>
       <div class="toolbar" style="margin:0">
         <span class="badge ${miRol ? "badge-" + miRol : "badge-lector"}">${miRol ? ROLES[miRol] : "Administrador"}</span>
         ${S.puedeEditar ? `<button id="btn-calcular" class="btn btn-primary btn-sm" ${nAct ? "" : "disabled"}>Calcular programa</button>
@@ -132,6 +138,15 @@ function tabResumen(el) {
     ${ed ? `<div class="add-row" style="max-width:560px"><input type="date" id="fer-fecha" style="flex:0 0 160px"><input id="fer-nombre" placeholder="Nombre (ej. Glorias Navales)" maxlength="60">
       <button id="btn-add-fer" class="btn btn-secondary">Agregar feriado</button></div>
       <p class="help">Referenciales: verificar con la fuente oficial antes de usar en un programa real.</p>` : ""}
+    <h2 style="margin-top:28px">Líneas base</h2>
+    <p class="help">Fotografías del programa calculado para comparar. La activa se muestra en el Gantt y en la exportación.</p>
+    <div class="table-wrap" style="max-width:820px"><table><thead><tr><th>Nombre</th><th>Creada</th><th>Fecha de corte</th><th>Término</th><th>Comparar</th>${ed ? "<th></th>" : ""}</tr></thead>
+      <tbody>${(p.lineasBase || []).map((b) => `<tr><td>${esc(b.nombre)}</td><td>${esc(new Date(b.fecha).toLocaleDateString("es-CL"))}</td>
+        <td>${esc(b.corte ? fechaCL(b.corte) : "Sin corte")}</td><td class="mono">${esc(fechaCL(b.termino))}</td>
+        <td>${p.lineaBaseActiva === b.id ? `<span class="badge badge-ok">Activa</span>` : ed ? `<button class="btn btn-secondary btn-sm lb-act" data-id="${esc(b.id)}">Usar para comparar</button>` : ""}</td>
+        ${ed ? `<td><button class="icon-btn lb-del" data-id="${esc(b.id)}" aria-label="Eliminar">✕</button></td>` : ""}</tr>`).join("")
+        || `<tr><td colspan="6" class="muted">Sin líneas base.</td></tr>`}</tbody></table></div>
+    ${ed ? `<div class="row-actions"><button id="btn-lb" class="btn btn-secondary">Crear línea base desde el último cálculo</button></div>` : ""}
     <h2 style="margin-top:28px">Miembros</h2>
     <div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Email</th><th>Rol</th></tr></thead><tbody>${filas || `<tr><td colspan="3">Sin miembros.</td></tr>`}</tbody></table></div>
     ${me.admin ? `<div class="row-actions">
@@ -141,6 +156,50 @@ function tabResumen(el) {
       <p class="help">¿No aparece la persona? Debe ingresar una vez a la app con su cuenta Google para quedar registrada.</p>
       <div class="row-actions" style="margin-top:32px"><button id="btn-eliminar" class="btn btn-danger">Eliminar programa</button></div>` : ""}`;
   if (ed) {
+    $("#btn-lb").onclick = () => {
+      const k = S.prog.calculo;
+      if (!k || k.firma !== firma()) return toast("Calcula el programa antes de crear la línea base: el cálculo debe estar al día.");
+      openModal(`<h2>Nueva línea base</h2>
+        <p class="help" style="margin:0">Se guardan las fechas del último cálculo (término ${esc(fechaCL(k.termino))}${k.corte ? `, corte ${esc(fechaCL(k.corte))}` : ""}) y queda activa para comparar.</p>
+        <label>Nombre<input name="nombre" maxlength="60" placeholder="Ej. Programa contractual"></label>
+        <p class="msg-error" hidden></p>
+        <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary">Crear línea base</button></div>`,
+        async (fd) => {
+          const nombre = String(fd.get("nombre")).trim(); if (!nombre) throw new Error("Falta el nombre.");
+          const id = "LB" + Date.now().toString(36);
+          const actividades = Object.fromEntries(todas().filter((a) => a.calc).map((a) => [a.id, [a.calc.ie, a.calc.te]]));
+          const meta = { id, nombre, fecha: new Date().toISOString(), corte: k.corte || null, termino: k.termino };
+          const lista = [...(S.prog.lineasBase || []), meta];
+          const b = writeBatch(CTX.db);
+          b.set(doc(CTX.db, "programas", S.id, "lineasBase", id), { ...meta, actividades });
+          b.update(refProg(S.id), { lineasBase: lista, lineaBaseActiva: id });
+          await b.commit();
+          S.prog.lineasBase = lista; S.prog.lineaBaseActiva = id; S.base = { ...meta, actividades };
+          render(); toast(`Línea base "${nombre}" creada y activa`);
+        });
+    };
+    $$(".lb-act", el).forEach((bt) => (bt.onclick = async () => {
+      try {
+        const snap = await getDoc(doc(CTX.db, "programas", S.id, "lineasBase", bt.dataset.id));
+        if (!snap.exists()) throw new Error("La línea base ya no existe.");
+        await updateDoc(refProg(S.id), { lineaBaseActiva: bt.dataset.id });
+        S.prog.lineaBaseActiva = bt.dataset.id; S.base = { id: snap.id, ...snap.data() }; render(); toast("Línea base activa cambiada");
+      } catch (e) { toast(errorMsg(e)); }
+    }));
+    $$(".lb-del", el).forEach((bt) => (bt.onclick = async () => {
+      const m = (S.prog.lineasBase || []).find((x) => x.id === bt.dataset.id);
+      if (!confirm(`¿Eliminar la línea base "${m?.nombre}"? No se puede deshacer.`)) return;
+      try {
+        const lista = (S.prog.lineasBase || []).filter((x) => x.id !== bt.dataset.id);
+        const activa = S.prog.lineaBaseActiva === bt.dataset.id ? null : S.prog.lineaBaseActiva;
+        const b = writeBatch(CTX.db);
+        b.delete(doc(CTX.db, "programas", S.id, "lineasBase", bt.dataset.id));
+        b.update(refProg(S.id), { lineasBase: lista, lineaBaseActiva: activa });
+        await b.commit();
+        S.prog.lineasBase = lista; S.prog.lineaBaseActiva = activa; if (!activa) S.base = null;
+        render(); toast("Línea base eliminada");
+      } catch (e) { toast(errorMsg(e)); }
+    }));
     const guardarFer = async (lista) => { lista.sort((a, b) => a.fecha.localeCompare(b.fecha)); await setDoc(refDef(), { feriados: lista }, { merge: true }); S.feriados = lista; render(); };
     $("#btn-add-fer").onclick = async () => {
       const fecha = $("#fer-fecha").value, nombre = $("#fer-nombre").value.trim();
@@ -194,7 +253,7 @@ function tabResumen(el) {
     if (txt !== p.nombre) { if (txt !== null) toast("El nombre no coincide; no se eliminó"); return; }
     try {
       const batch = writeBatch(CTX.db);
-      for (const sub of ["partidas", "definiciones", "control"]) {
+      for (const sub of ["partidas", "definiciones", "control", "lineasBase"]) {
         (await getDocs(collection(CTX.db, "programas", S.id, sub))).docs.forEach((d) => batch.delete(d.ref));
       }
       batch.delete(refProg(S.id));
@@ -687,7 +746,9 @@ async function exportarExcel() {
       "Predecesoras", ...cods, "Tipo restricción", "Fecha restricción",
       "Día IT (n° hábil)", "Día TT (exclusivo)", "Día IT tardío", "Día TT tardío (exclusivo)",
       "Inicio temprano", "Término temprano", "Inicio tardío", "Término tardío", "Holgura total", "Holgura libre", "Crítica",
-      "Estado", "Inicio real", "Término real", "% avance", "Cantidad ejecutada", "Duración remanente"];
+      "Estado", "Inicio real", "Término real", "% avance", "Cantidad ejecutada", "Duración remanente",
+      `Inicio base${S.base ? " (" + S.base.nombre + ")" : ""}`, "Término base", "Desviación término (días hábiles)"];
+    const calX = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados);
     const filas = [cab, ...acts.map((a) => {
       const p = partidas[a.partida], x = ok ? r.res.get(a.id) : null;
       return [a.id, a.nombre, a.partida, MODOS[p?.modo] || "", a.cantidad ?? "", p?.modo === "cantidad" ? p.unidad : "",
@@ -697,11 +758,13 @@ async function exportarExcel() {
         x ? x.es : "", x ? x.es + x.dur : "", x ? x.ls : "", x ? x.ls + x.dur : "",
         aFecha(x?.ie), aFecha(x?.te), aFecha(x?.it), aFecha(x?.tt), x?.ht ?? "", x?.hl ?? "", x ? (x.critica ? "Sí" : "No") : "",
         { no: "No iniciada", curso: "En curso", term: "Terminada" }[a.avance?.estado || "no"], aFecha(a.avance?.inicioReal), aFecha(a.avance?.terminoReal),
-        a.avance?.pct ?? "", a.avance?.ejecutado ?? "", x ? x.rem : ""];
+        a.avance?.pct ?? "", a.avance?.ejecutado ?? "", x ? x.rem : "",
+        aFecha(S.base?.actividades?.[a.id]?.[0]), aFecha(S.base?.actividades?.[a.id]?.[1]),
+        x && S.base?.actividades?.[a.id] ? calX.W(x.te) - calX.W(S.base.actividades[a.id][1]) : ""];
     })];
     const b = 10 + cods.length; // primera columna después de los códigos
     hoja("Actividades", filas, [12, 30, 9, 13, 9, 7, 10, 9, 9, 28, ...cods.map(() => 8), 20, 12, 9, 9, 9, 9, 12, 12, 12, 12, 8, 8, 7],
-      [b + 1, b + 6, b + 7, b + 8, b + 9, b + 14, b + 15]);
+      [b + 1, b + 6, b + 7, b + 8, b + 9, b + 14, b + 15, b + 19, b + 20]);
 
     // 2. Relaciones (lógica + ritmo)
     const rel = [["Predecesora", "Sucesora", "Tipo", "Desfase (días hábiles)", "Origen"]];
@@ -826,6 +889,7 @@ function importarExcel() {
 function apiGantt() {
   return {
     S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar,
+    calendario: () => crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados),
     abrirActividad: (a) => modalActividad(a),
     guardarLayouts: async (lista) => { await setDoc(refDef(), { layouts: lista }, { merge: true }); S.layouts = lista; },
   };

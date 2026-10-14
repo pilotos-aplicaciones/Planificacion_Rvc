@@ -8,6 +8,7 @@ const BASE_COLS = {
   id: { t: "ID", w: 92 }, nombre: { t: "Nombre", w: 230 }, partida: { t: "Partida", w: 70 },
   dur: { t: "Dur.", w: 44, num: 1 }, ie: { t: "Inicio", w: 72 }, te: { t: "Término", w: 72 },
   ht: { t: "HT", w: 40, num: 1 }, hl: { t: "HL", w: 40, num: 1 }, pred: { t: "Predecesoras", w: 160 },
+  bie: { t: "Inicio base", w: 72 }, bte: { t: "Término base", w: 80 }, dvt: { t: "Desv.", w: 48, num: 1 },
 };
 const ESCALAS = { dia: { t: "Día", ppd: 22 }, semana: { t: "Semana", ppd: 7 }, mes: { t: "Mes", ppd: 2.4 } };
 const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
@@ -15,7 +16,7 @@ const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "o
 export const LAYOUT_DEFECTO = {
   id: "defecto", nombre: "Por partida", agrupar: ["partida"], filtros: [], coincidir: "todos",
   columnas: ["id", "nombre", "dur", "ie", "te", "ht", "pred"],
-  opciones: { color: "partida", relaciones: true, holgura: true, escala: "semana", orden: "inicio" },
+  opciones: { color: "partida", relaciones: true, holgura: true, base: true, escala: "semana", orden: "inicio" },
 };
 
 const OPS = {
@@ -160,7 +161,8 @@ function dibujar(L, escala) {
   const cols = (L.columnas || []).map((k) => k.startsWith("cod:") ? { k, t: k.slice(4), w: 70 } : { k, ...BASE_COLS[k] }).filter((c) => c.t);
   const LW = Math.max(160, cols.reduce((s, c) => s + c.w, 0));
   const conCalc = API.todas().filter((a) => a.calc);
-  $("#g-info").textContent = `${total} actividad(es) mostradas de ${API.todas().length}.` + (conCalc.length ? "" : " Calcula el programa para ver las barras.");
+  $("#g-info").textContent = `${total} actividad(es) mostradas de ${API.todas().length}.` + (conCalc.length ? "" : " Calcula el programa para ver las barras.")
+    + (S.base ? ` Línea base activa: ${S.base.nombre}.` : "");
   if (!F.length) { $("#g-scroll").innerHTML = `<div class="empty" style="margin:12px"><strong>Ninguna actividad cumple los filtros del layout</strong></div>`; return; }
 
   const fechas = conCalc.flatMap((a) => [a.calc.ie, a.calc.tt || a.calc.te]).sort();
@@ -208,17 +210,20 @@ function dibujar(L, escala) {
       }
       return;
     }
-    const a = f.a, c = a.calc, p = S.partidas.get(a.partida);
+    const a = f.a, c = a.calc, p = S.partidas.get(a.partida), lb = S.base?.actividades?.[a.id];
     const celda = (col) => {
       switch (col.k) {
         case "id": return esc(a.id); case "nombre": return esc(a.nombre); case "partida": return esc(a.partida);
         case "dur": return duracionEfectiva(a, p) ?? ""; case "ie": return corta(c?.ie); case "te": return corta(c?.te);
-        case "ht": return c?.ht ?? ""; case "hl": return c?.hl ?? ""; case "pred": return esc(predText(a.predecesoras));
+        case "ht": return c?.ht ?? ""; case "hl": return c?.hl ?? "";
+        case "bie": return corta(lb?.[0]); case "bte": return corta(lb?.[1]);
+        case "dvt": { if (!lb || !c) return ""; const dv = cal.W(c.te) - cal.W(lb[1]); return dv > 0 ? `<span class="warn">+${dv}</span>` : dv; } case "pred": return esc(predText(a.predecesoras));
       }
       return esc(a.codigos?.[col.k.slice(4)] || "");
     };
     izq += `<div class="g-row g-act ${c?.critica ? "crit" : ""} ${API.puedeEditar ? "link" : ""}" data-id="${esc(a.id)}">${cols.map((col, j) =>
       `<span class="${col.num ? "num" : ""}" style="width:${col.w}px;${j === 0 ? `padding-left:${8 + f.nivel * 14}px` : ""}" title="${col.k === "pred" || col.k === "nombre" ? celda(col) : ""}">${celda(col)}</span>`).join("")}</div>`;
+    if (op.base && lb) barras += `<rect x="${X(lb[0])}" y="${y + RH - 6}" width="${Math.max(2, X(lb[1]) + ppd - X(lb[0]))}" height="3" class="g-base"><title>Línea base: ${corta(lb[0])} a ${corta(lb[1])}</title></rect>`;
     if (!c) return;
     const x1 = X(c.ie), x2 = X(c.te) + ppd;
     const color = c.estado === "term" ? "#A3ADB8" : c.critica ? "var(--critical)" : (op.color === "uniforme" ? "var(--plan)" : (p?.color || "#808080"));
@@ -285,7 +290,8 @@ function editarLayout(L0, nuevo, el) {
       <label>Escala por defecto<select name="escala">${Object.entries(ESCALAS).map(([k, v]) => `<option value="${k}" ${o.escala === k ? "selected" : ""}>${v.t}</option>`).join("")}</select></label>
       <label>Orden dentro del grupo<select name="orden"><option value="inicio">Por inicio</option><option value="id" ${o.orden === "id" ? "selected" : ""}>Por ID</option></select></label>
       <div class="chk-grid" style="align-self:end"><label><input type="checkbox" name="relaciones" ${o.relaciones ? "checked" : ""}> Relaciones</label>
-        <label><input type="checkbox" name="holgura" ${o.holgura ? "checked" : ""}> Holgura total</label></div>
+        <label><input type="checkbox" name="holgura" ${o.holgura ? "checked" : ""}> Holgura total</label>
+        <label><input type="checkbox" name="base" ${o.base ? "checked" : ""}> Línea base</label></div>
     </div></fieldset>
     <p class="msg-error" hidden></p>
     <div class="modal-actions"><button class="btn btn-secondary" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary" value="save">Guardar layout</button></div>`,
@@ -301,7 +307,7 @@ function editarLayout(L0, nuevo, el) {
       const nuevoL = {
         id: L.id && L.id !== "defecto" ? L.id : "L" + Date.now().toString(36), nombre,
         agrupar: [0, 1, 2].map((i) => fd.get("agr" + i)).filter(Boolean), filtros, coincidir: fd.get("coincidir"), columnas,
-        opciones: { color: fd.get("color"), escala: fd.get("escala"), orden: fd.get("orden"), relaciones: fd.get("relaciones") === "on", holgura: fd.get("holgura") === "on" },
+        opciones: { color: fd.get("color"), escala: fd.get("escala"), orden: fd.get("orden"), relaciones: fd.get("relaciones") === "on", holgura: fd.get("holgura") === "on", base: fd.get("base") === "on" },
       };
       const lista = [...(S.layouts || [])];
       const i = lista.findIndex((l) => l.id === nuevoL.id);

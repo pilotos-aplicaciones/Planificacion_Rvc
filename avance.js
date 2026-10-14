@@ -95,8 +95,11 @@ export function tabAvance(el, api) {
         const av = leer(), est = ev.target.value; av.estado = est;
         if (est === "no") { av.inicioReal = null; av.terminoReal = null; av.pct = null; av.ejecutado = null; }
         // Propone las fechas programadas solo si caen antes del corte; si no, quedan vacías para ingresarlas.
-        if (est !== "no" && !av.inicioReal) av.inicioReal = a.calc?.ie && a.calc.ie <= corte ? a.calc.ie : null;
-        if (est === "term" && !av.terminoReal) av.terminoReal = a.calc?.te && a.calc.te <= corte && (!av.inicioReal || a.calc.te >= av.inicioReal) ? a.calc.te : null;
+        // Propone fechas programadas (cálculo o, si el corte ya las corrió, línea base activa) solo si caen antes del corte.
+        const lb = S.base?.actividades?.[a.id];
+        const prop = (f1, f2) => (f1 && f1 <= corte ? f1 : f2 && f2 <= corte ? f2 : null);
+        if (est !== "no" && !av.inicioReal) av.inicioReal = prop(a.calc?.ie, lb?.[0]);
+        if (est === "term" && !av.terminoReal) { const t = prop(a.calc?.te, lb?.[1]); av.terminoReal = t && (!av.inicioReal || t >= av.inicioReal) ? t : null; }
         if (est !== "term") av.terminoReal = null;
         if (est !== "curso") { av.pct = null; av.ejecutado = null; }
         marcar(av); pintar();
