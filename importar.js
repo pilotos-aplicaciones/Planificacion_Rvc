@@ -70,6 +70,7 @@ export function leerExcel(arrayBuffer) {
     }
     const color = txt(r["Color"]).replace("#", "");
     if (color) { if (/^[0-9A-Fa-f]{6}$/.test(color)) p.color = "#" + color.toUpperCase(); else err("el color debe tener 6 caracteres (ej. 2E75B6)."); }
+    p.orden = partidas.length + 1;
     partidas.push(p);
   });
   if (!partidas.length) errores.push("La hoja Partidas no tiene partidas.");
@@ -127,13 +128,16 @@ export function leerExcel(arrayBuffer) {
   // Validación de conjunto (mismas reglas que la edición manual)
   const pMap = new Map(partidas.map((p) => [p.id, p]));
   const ids = new Set(actividades.map((a) => a.id));
+  const cantIgnorada = [];
   actividades.forEach((a) => {
     const p = pMap.get(a.partida);
     if (p?.modo === "cantidad") a.duracion = null;
+    if (p && p.modo !== "cantidad" && a.cantidad !== null) cantIgnorada.push(filaDe[a.id]);
     if (p?.modo !== "cantidad") a.cantidad = null;
     validarActividad(a, ids, (pid) => pMap.get(pid), codigos)
       .forEach((m) => errores.push(`Actividades, fila ${filaDe[a.id]} (${a.id}): ${m}.`));
   });
+  if (cantIgnorada.length) avisos.push(`Se ignora la cantidad en ${cantIgnorada.length} actividad(es) de partidas fijas o por ritmo, porque no se usa (filas ${cantIgnorada.slice(0, 10).join(", ")}${cantIgnorada.length > 10 ? "…" : ""}).`);
   const ciclo = buscarCiclo(actividades);
   if (ciclo) errores.push(`Ciclo lógico entre predecesoras: ${ciclo.join(" → ")}.`);
 

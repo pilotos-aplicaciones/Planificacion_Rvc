@@ -61,7 +61,7 @@ export function calcular({ actividades, partidas, codigos, programa, feriados })
   });
   const rels = [];
   actividades.forEach((a) => (a.predecesoras || []).forEach((x) => {
-    if (N.has(x.id)) rels.push({ de: x.id, a: a.id, tipo: x.tipo === "SS" ? "SS" : "FS", desfase: 0 });
+    if (N.has(x.id)) rels.push({ de: x.id, a: a.id, tipo: x.tipo === "SS" ? "SS" : "FS", desfase: Number(x.desfase) || 0 });
     else errores.push(`${a.id}: la predecesora ${x.id} no existe.`);
   }));
   const rRitmo = relacionesRitmo(actividades, partidas, codigos);

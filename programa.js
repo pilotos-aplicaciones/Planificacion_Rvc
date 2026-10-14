@@ -38,8 +38,7 @@ async function cargar(id) {
     getDoc(doc(db, "programas", id, "definiciones", "actual")),
     getDocs(collection(db, "programas", id, "partidas")),
   ]);
-  const partidas = new Map(parts.docs.map((d) => [d.id, { actividades: [], ...d.data(), id: d.id }])
-    .sort((a, b) => a[0].localeCompare(b[0])));
+  const partidas = ordenadas(parts.docs.map((d) => [d.id, { actividades: [], ...d.data(), id: d.id }]));
   return {
     id, prog, partidas, tab: "resumen",
     codigos: dSnap.exists() ? dSnap.data().codigos || [] : [],
@@ -49,6 +48,11 @@ async function cargar(id) {
   };
 }
 
+// Partidas en su orden de secuencia (campo orden; las antiguas sin orden van al final por ID)
+function ordenadas(entradas) {
+  return new Map(entradas.sort((a, b) => (a[1].orden ?? 1e9) - (b[1].orden ?? 1e9) || a[0].localeCompare(b[0])));
+}
+const posPartida = () => new Map([...S.partidas.keys()].map((k, i) => [k, i]));
 const todas = () => [...S.partidas.values()].flatMap((p) => p.actividades.map((a) => ({ ...a, partida: p.id })));
 const fechaCL = (iso) => (iso ? iso.split("-").reverse().join("-") : "");
 const fechaCorta = (iso) => (iso ? `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(2, 4)}` : "");
@@ -58,8 +62,9 @@ function firma() {
   const datos = JSON.stringify({
     f: S.prog.fechaInicio, c: S.prog.calendario, fer: S.feriados.map((x) => x.fecha).sort(),
     cod: S.codigos.map((c) => [c.codigo, c.valores.map((v) => v.valor)]),
-    p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion]),
-    a: todas().map((a) => JSON.stringify([a.id, a.partida, a.cantidad, a.duracion, a.predecesoras,
+    p: [...S.partidas.values()].map((p) => [p.id, p.modo, p.rendimiento, p.redondeo, p.ritmo, p.codigosUnidad, p.direccion]).sort(),
+    a: todas().map((a) => JSON.stringify([a.id, a.partida, a.cantidad, a.duracion,
+      (a.predecesoras || []).map((x) => [x.id, x.tipo, Number(x.desfase) || 0]),
       a.restriccion, Object.entries(a.codigos || {}).sort()])).sort(),
   });
   let h = 5381; for (let i = 0; i < datos.length; i++) h = ((h << 5) + h + datos.charCodeAt(i)) | 0;
@@ -301,8 +306,10 @@ function tabPartidas(el) {
     <div class="toolbar"><p class="muted" style="margin:0">Cada actividad pertenece a una partida, que define cómo se calcula su duración.</p>
       <span class="spacer"></span>${ed ? `<button id="btn-nueva-partida" class="btn btn-primary">+ Nueva partida</button>` : ""}</div>
     ${parts.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>ID</th><th>Nombre</th><th>Modo</th><th>Parámetro</th><th>Códigos de unidad</th><th class="num">Actividades</th></tr></thead>
-      <tbody>${parts.map((p) => `<tr class="${ed ? "link" : ""}" data-id="${esc(p.id)}">
+      <thead><tr>${ed ? `<th style="width:76px">Orden</th>` : ""}<th>ID</th><th>Nombre</th><th>Modo</th><th>Parámetro</th><th>Códigos de unidad</th><th class="num">Actividades</th></tr></thead>
+      <tbody>${parts.map((p, i) => `<tr class="${ed ? "link" : ""}" data-id="${esc(p.id)}">
+        ${ed ? `<td><button class="icon-btn mv-part" data-i="${i}" data-d="-1" ${i === 0 ? "disabled" : ""} aria-label="Subir">↑</button>
+          <button class="icon-btn mv-part" data-i="${i}" data-d="1" ${i === parts.length - 1 ? "disabled" : ""} aria-label="Bajar">↓</button></td>` : ""}
         <td class="mono"><span class="swatch" style="background:${esc(p.color || "#808080")}"></span>${esc(p.id)}</td>
         <td>${esc(p.nombre)}</td><td>${esc(MODOS[p.modo])}</td><td>${parametro(p)}</td>
         <td>${p.modo === "ritmo" ? esc(p.codigosUnidad.join(" → ")) + (p.direccion === "descendente" ? " (desc.)" : "") : "—"}</td>
@@ -311,6 +318,18 @@ function tabPartidas(el) {
   if (!ed) return;
   $("#btn-nueva-partida").onclick = () => modalPartida(null);
   $$("tr.link", el).forEach((tr) => (tr.onclick = () => modalPartida(S.partidas.get(tr.dataset.id))));
+  $$(".mv-part", el).forEach((b) => (b.onclick = async (ev) => {
+    ev.stopPropagation();
+    const lista = [...S.partidas.values()], i = +b.dataset.i, j = i + +b.dataset.d;
+    [lista[i], lista[j]] = [lista[j], lista[i]];
+    try {
+      const batch = writeBatch(CTX.db);
+      lista.forEach((p, k) => { if (p.orden !== k + 1) { batch.update(refPart(p.id), { orden: k + 1 }); } });
+      await batch.commit();
+      lista.forEach((p, k) => (p.orden = k + 1));
+      S.partidas = ordenadas([...S.partidas.entries()]); render();
+    } catch (e) { toast(errorMsg(e)); }
+  }));
 }
 
 function modalPartida(p) {
@@ -367,9 +386,12 @@ function modalPartida(p) {
         if (new Set(d.codigosUnidad).size !== d.codigosUnidad.length) errs.push("Un código de unidad está repetido.");
       }
       if (errs.length) throw new Error(errs.join("\n"));
-      if (nuevo) { await setDoc(refPart(id), { ...d, actividades: [] }); S.partidas.set(id, { ...d, actividades: [] }); }
+      if (nuevo) {
+        d.orden = Math.max(0, ...[...S.partidas.values()].map((x, i) => x.orden ?? i + 1)) + 1;
+        await setDoc(refPart(id), { ...d, actividades: [] }); S.partidas.set(id, { ...d, actividades: [] });
+      }
       else { await updateDoc(refPart(id), d); Object.assign(S.partidas.get(id), d); }
-      S.partidas = new Map([...S.partidas.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+      S.partidas = ordenadas([...S.partidas.entries()]);
       render(); toast(nuevo ? "Partida creada" : "Partida guardada");
     },
     (form) => {
@@ -416,10 +438,10 @@ function tabActividades(el) {
       <tbody id="act-body"></tbody></table></div>`;
   const pintar = () => {
     const fp = $("#f-partida").value, ft = $("#f-texto").value.trim().toLowerCase(), fc = $("#f-criticas").checked;
-    const porInicio = $("#f-orden").value === "inicio";
+    const porInicio = $("#f-orden").value === "inicio", pos = posPartida();
     const filas = todas().filter((a) => (!fp || a.partida === fp) && (!fc || a.calc?.critica) && (!ft || a.id.toLowerCase().includes(ft) || (a.nombre || "").toLowerCase().includes(ft)))
       .sort((a, b) => porInicio ? (a.calc?.ie || "9").localeCompare(b.calc?.ie || "9") || a.id.localeCompare(b.id)
-        : a.partida.localeCompare(b.partida) || a.id.localeCompare(b.id));
+        : pos.get(a.partida) - pos.get(b.partida) || a.id.localeCompare(b.id));
     $("#act-body").innerHTML = filas.map((a) => {
       const p = S.partidas.get(a.partida), dur = duracionEfectiva(a, p);
       const c = a.calc;
@@ -453,8 +475,13 @@ function modalActividad(orig, partidaSugerida) {
     </div>
     <label>Nombre<input name="nombre" value="${esc(a.nombre)}" maxlength="120" placeholder="Ej. Pintura depto 501"></label>
     <div id="campos-modo"></div>
-    <label>Predecesoras<input name="predecesoras" value="${esc(predText(a.predecesoras))}" placeholder="CERA-0001; TABI-0002 II">
-      <span class="help">Separadas por punto y coma. Sin sufijo = fin-inicio; con II = inicio-inicio. Desfase 0.</span></label>
+    <fieldset><legend>Predecesoras</legend>
+      <div class="table-wrap"><table class="pred-table"><thead><tr><th>Actividad</th><th style="width:120px">Relación</th><th style="width:110px">Desfase (días)</th><th style="width:40px"></th></tr></thead>
+        <tbody id="pred-body"></tbody></table></div>
+      <div><button type="button" class="btn btn-secondary btn-sm" id="btn-add-pred">+ Agregar predecesora</button></div>
+      <datalist id="lista-ids">${todas().filter((x) => x.id !== a.id).sort((x, y) => x.id.localeCompare(y.id)).map((x) => `<option value="${esc(x.id)}">${esc(x.nombre)}</option>`).join("")}</datalist>
+      <span class="help">FI: parte cuando termina la predecesora. II: parte cuando parte la predecesora. Desfase en días hábiles; negativo = traslape.</span>
+    </fieldset>
     <div class="grid2">
       <label>Restricción<select name="rTipo"><option value="">Sin restricción</option>${Object.entries(RESTRICCIONES).map(([k, v]) => `<option value="${k}" ${a.restriccion?.tipo === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       <label>Fecha de restricción<input type="date" name="rFecha" value="${esc(a.restriccion?.fecha || "")}"></label>
@@ -481,7 +508,13 @@ function modalActividad(orig, partidaSugerida) {
         if (!/^[A-Z0-9_]{1,12}-\d{4}$/.test(id)) errs.push("El ID debe ser partida + guion + 4 dígitos (ej. PINT-0001).");
         if (todasAct.some((x) => x.id === id)) errs.push(`Ya existe la actividad ${id}.`);
       }
-      const { lista, errs: ePred } = parsePredecesoras(g("predecesoras")); errs.push(...ePred.map((m) => cap(m) + "."));
+      const lista = [];
+      $$("#pred-body tr", form).forEach((tr) => {
+        const pid = $(".pred-id", tr).value.trim().toUpperCase(); if (!pid) return;
+        const t = $(".pred-des", tr).value.trim(), d = t === "" ? 0 : Number(t);
+        if (!Number.isInteger(d)) errs.push(`Predecesora ${pid}: el desfase debe ser un número entero de días.`);
+        lista.push({ id: pid, tipo: $(".pred-tipo", tr).value, desfase: Number.isInteger(d) ? d : 0 });
+      });
       const codigos = {};
       S.codigos.forEach((c) => { const v = g("cod:" + c.codigo); if (v) codigos[c.codigo] = v; });
       const datos = {
@@ -538,6 +571,18 @@ function modalActividad(orig, partidaSugerida) {
         const fid = form.elements.actid;
         if (nuevo && !fid.dataset.tocado) fid.value = siguienteId(p.id);
       };
+      const filaPred = (x = { id: "", tipo: "FS", desfase: 0 }) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td><input class="pred-id" list="lista-ids" value="${esc(x.id)}" placeholder="Ej. CERA-0001" style="width:100%"></td>
+          <td><select class="pred-tipo"><option value="FS" ${x.tipo !== "SS" ? "selected" : ""}>FI (fin-inicio)</option><option value="SS" ${x.tipo === "SS" ? "selected" : ""}>II (inicio-inicio)</option></select></td>
+          <td><input class="pred-des" type="number" step="1" value="${Number(x.desfase) || 0}" style="width:90px"></td>
+          <td><button type="button" class="icon-btn pred-del" aria-label="Quitar">✕</button></td>`;
+        $("#pred-body", form).appendChild(tr);
+        return tr;
+      };
+      (a.predecesoras || []).forEach((x) => filaPred(x));
+      $("#btn-add-pred", form).onclick = () => $(".pred-id", filaPred()).focus();
+      $("#pred-body", form).onclick = (ev) => { if (ev.target.closest(".pred-del")) ev.target.closest("tr").remove(); };
       form.elements.partida.onchange = () => pintar(false);
       if (nuevo) form.elements.actid.oninput = () => (form.elements.actid.dataset.tocado = "1");
       pintar(true);
@@ -603,7 +648,8 @@ async function exportarExcel() {
   const btn = $("#btn-exportar"); btn.disabled = true; btn.textContent = "Exportando…";
   try {
     await cargarXLSX();
-    const acts = todas().sort((a, b) => a.partida.localeCompare(b.partida) || a.id.localeCompare(b.id));
+    const pos = posPartida();
+    const acts = todas().sort((a, b) => pos.get(a.partida) - pos.get(b.partida) || a.id.localeCompare(b.id));
     const partidas = Object.fromEntries(S.partidas);
     const probs = problemas();
     const r = probs.length || !acts.length ? null
@@ -641,7 +687,7 @@ async function exportarExcel() {
 
     // 2. Relaciones (lógica + ritmo)
     const rel = [["Predecesora", "Sucesora", "Tipo", "Desfase (días hábiles)", "Origen"]];
-    acts.forEach((a) => (a.predecesoras || []).forEach((x) => rel.push([x.id, a.id, x.tipo === "SS" ? "II" : "FI", 0, "Lógica (cargada)"])));
+    acts.forEach((a) => (a.predecesoras || []).forEach((x) => rel.push([x.id, a.id, x.tipo === "SS" ? "II" : "FI", Number(x.desfase) || 0, "Lógica (cargada)"])));
     relacionesRitmo(acts, partidas, S.codigos).forEach((x) => rel.push([x.de, x.a, "II", x.desfase, `Ritmo ${x.de.split("-")[0]} (automática)`]));
     hoja("Relaciones", rel, [12, 12, 6, 20, 22]);
 
@@ -655,6 +701,7 @@ async function exportarExcel() {
       ["Calendario", CALENDARIOS[S.prog.calendario]], ["Término calculado", ok ? aFecha(r.termino) : "Sin calcular"], [],
       ["Convención", "Día 0 = primer día hábil desde la fecha de inicio. TT = IT + duración (exclusivo): la actividad ocupa los días IT a TT-1."],
       ["FI", "Sucesora: IT ≥ TT de la predecesora + desfase"], ["II", "Sucesora: IT ≥ IT de la predecesora + desfase"],
+      ["Desfase", "En días hábiles; puede ser negativo (traslape). Texto: CERA-0001 FI+2, TABI-0002 II-1"],
       ["Ritmo", "Unidad k de una partida: desfase acumulado = ENTERO((k-1)/ritmo), ordenadas por los códigos de unidad"], [],
       ["Feriado", "Fecha"], ...S.feriados.map((f) => [f.nombre, aFecha(f.fecha)])], [18, 90], [1]);
 
@@ -703,11 +750,15 @@ function importarExcel() {
         $("#imp-res", form).innerHTML = `<p class="help">Revisando…</p>`;
         await cargarXLSX();
         datos = leerExcel(await f.arrayBuffer());
-        let termino = null;
+        const termino = {};
+        const calcCon = (prog) => calcular({ actividades: datos.actividades, partidas: Object.fromEntries(datos.partidas.map((p) => [p.id, p])),
+          codigos: datos.codigos, programa: prog, feriados: datos.feriados });
+        const progActual = { fechaInicio: S.prog.fechaInicio, calendario: S.prog.calendario };
+        const difiere = datos.programa.fechaInicio !== progActual.fechaInicio || datos.programa.calendario !== progActual.calendario;
         if (!datos.errores.length) {
-          const r = calcular({ actividades: datos.actividades, partidas: Object.fromEntries(datos.partidas.map((p) => [p.id, p])),
-            codigos: datos.codigos, programa: datos.programa, feriados: datos.feriados });
-          if (r.errores.length) datos.errores.push(...r.errores); else termino = r.termino;
+          const r = calcCon(datos.programa);
+          if (r.errores.length) datos.errores.push(...r.errores);
+          else { termino.excel = r.termino; if (difiere) termino.programa = calcCon(progActual).termino; }
         }
         const nVal = datos.codigos?.reduce((n, c) => n + c.valores.length, 0) || 0;
         const E = datos.errores, A = datos.avisos;
@@ -719,18 +770,26 @@ function importarExcel() {
               <div><span class="help">Partidas</span><strong>${datos.partidas.length}</strong></div>
               <div><span class="help">Códigos (valores)</span><strong>${datos.codigos.length} (${nVal})</strong></div>
               <div><span class="help">Feriados</span><strong>${datos.feriados.length}</strong></div>
-              <div><span class="help">Inicio</span><strong>${esc(fechaCL(datos.programa.fechaInicio))}</strong></div>
-              <div><span class="help">Calendario</span><strong>${esc(CALENDARIOS[datos.programa.calendario])}</strong></div>
-              <div><span class="help">Término estimado</span><strong>${esc(fechaCL(termino))}</strong></div></div>`}
+              <div><span class="help">Término estimado</span><strong id="imp-term">${esc(fechaCL(termino.excel))}</strong></div></div>
+            ${difiere ? `<fieldset><legend>Fecha de inicio y calendario</legend>
+                <p class="warn" style="margin:0">El Excel y el programa no coinciden. Elige cuáles usar:</p>
+                <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="radio" name="usarCal" value="excel" checked>
+                  Los del Excel: ${esc(fechaCL(datos.programa.fechaInicio))}, ${esc(CALENDARIOS[datos.programa.calendario])}</label>
+                <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="radio" name="usarCal" value="programa">
+                  Los del programa: ${esc(fechaCL(progActual.fechaInicio))}, ${esc(CALENDARIOS[progActual.calendario])}</label>
+              </fieldset>`
+            : `<p class="help" style="margin:0">Inicio ${esc(fechaCL(progActual.fechaInicio))}, ${esc(CALENDARIOS[progActual.calendario])} (igual en el Excel y el programa).</p>`}`}
           ${A.length ? `<div class="help"><strong>Avisos:</strong><ul style="margin:4px 0 0;padding-left:18px">${A.map((m) => `<li>${esc(m)}</li>`).join("")}</ul></div>` : ""}`;
         $("#btn-imp", form).disabled = E.length > 0;
+        $$('input[name="usarCal"]', form).forEach((r) => (r.onchange = () => ($("#imp-term", form).textContent = fechaCL(termino[r.value]))));
         return false;
       }
       if (sub?.value === "importar") {
         if (!datos || datos.errores.length) throw new Error("Revisa el archivo antes de importar.");
         if (S.partidas.size || S.codigos.length) throw new Error("El programa ya tiene datos; recarga la página.");
         const db = CTX.db, b = writeBatch(db);
-        b.update(refProg(S.id), { fechaInicio: datos.programa.fechaInicio, calendario: datos.programa.calendario });
+        if ((form.elements.usarCal?.value || "excel") === "excel")
+          b.update(refProg(S.id), { fechaInicio: datos.programa.fechaInicio, calendario: datos.programa.calendario });
         b.set(refDef(), { codigos: datos.codigos, feriados: datos.feriados }, { merge: true });
         datos.partidas.forEach((p) => b.set(refPart(p.id), { ...p, actividades: datos.actividades.filter((a) => a.partida === p.id) }));
         await b.commit();
