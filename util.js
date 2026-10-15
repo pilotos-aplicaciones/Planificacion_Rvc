@@ -33,6 +33,16 @@ export function openModal(html, onSubmit, onRender) {
     try { if ((await onSubmit(new FormData(form), form, ev.submitter)) !== false) dlg.close(); }
     catch (e) { if (err) { err.textContent = errorMsg(e); err.hidden = false; err.scrollIntoView({ block: "nearest" }); } }
   };
+  // Enter no envía el formulario: evita que se active el primer botón (Cancelar/Eliminar) y se pierdan datos.
+  form.onkeydown = (ev) => {
+    if (ev.key === "Enter" && !["TEXTAREA", "BUTTON"].includes(ev.target.tagName)) ev.preventDefault();
+  };
+  // Esc cierra el diálogo: si hay datos ingresados, se pide confirmación.
+  let cambios = false;
+  form.oninput = form.onchange = () => (cambios = true);
+  dlg.oncancel = (ev) => {
+    if (cambios && !confirm("Hay datos ingresados sin guardar. ¿Cerrar y descartar los cambios?")) ev.preventDefault();
+  };
   onRender?.(form);
   dlg.showModal();
 }
