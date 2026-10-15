@@ -156,10 +156,41 @@ export function tabGantt(el, api) {
   dibujar(L, esc_);
 }
 
+// Contenido de una celda de la tabla izquierda (HTML escapado).
+function celdaAct(col, a, cal) {
+  const S = API.S, c = a.calc, p = S.partidas.get(a.partida), lb = S.base?.actividades?.[a.id];
+  switch (col.k) {
+    case "id": return esc(a.id); case "nombre": return esc(a.nombre); case "partida": return esc(a.partida);
+    case "dur": return duracionEfectiva(a, p) ?? ""; case "ie": return corta(c?.ie); case "te": return corta(c?.te);
+    case "ht": return c?.ht ?? ""; case "hl": return c?.hl ?? "";
+    case "bie": return corta(lb?.[0]); case "bte": return corta(lb?.[1]);
+    case "dvt": { if (!lb || !c) return ""; const dv = cal.W(c.te) - cal.W(lb[1]); return dv > 0 ? `<span class="warn">+${dv}</span>` : dv; }
+    case "pred": return esc(predText(a.predecesoras));
+  }
+  return esc(a.codigos?.[col.k.slice(4)] || "");
+}
+
+// v0.18: ancho de cada columna según su contenido visible (antes era fijo y cortaba el ID).
+const ANCHO_MAX = { nombre: 340, pred: 260 }, ANCHO_MAX_DEF = 200;
+let CV = null;
+function anchosColumnas(cols, F, cal) {
+  CV ||= document.createElement("canvas").getContext("2d");
+  const fam = getComputedStyle(document.body).fontFamily, px = parseFloat(getComputedStyle(document.body).fontSize) * 0.85;
+  const texto = (h) => String(h).replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  const acts = F.filter((f) => f.tipo === "act"), nivelMax = Math.max(0, ...acts.map((f) => f.nivel));
+  return cols.map((col, j) => {
+    CV.font = `600 ${px * 0.94}px ${fam}`; let w = CV.measureText(col.t).width;   // encabezado (.8rem, negrita)
+    CV.font = `${j === 0 ? "600 " : ""}${px}px ${fam}`;                            // la 1.ª columna va en negrita si es crítica
+    for (const f of acts) w = Math.max(w, CV.measureText(texto(celdaAct(col, f.a, cal))).width);
+    w = Math.min(Math.ceil(w) + 14, ANCHO_MAX[col.k] || ANCHO_MAX_DEF);
+    if (j === 0) w += 2 + nivelMax * 14;                                            // sangría de la agrupación
+    return { ...col, w: Math.max(w, col.num ? 36 : 44) };
+  });
+}
+
 function dibujar(L, escala) {
   const S = API.S, { filas: F, total } = filas(L), ppd = ESCALAS[escala].ppd, op = L.opciones || {};
-  const cols = (L.columnas || []).map((k) => k.startsWith("cod:") ? { k, t: k.slice(4), w: 70 } : { k, ...BASE_COLS[k] }).filter((c) => c.t);
-  const LW = Math.max(160, cols.reduce((s, c) => s + c.w, 0));
+  const cols0 = (L.columnas || []).map((k) => k.startsWith("cod:") ? { k, t: k.slice(4), w: 70 } : { k, ...BASE_COLS[k] }).filter((c) => c.t);
   const conCalc = API.todas().filter((a) => a.calc);
   $("#g-info").textContent = `${total} actividad(es) mostradas de ${API.todas().length}.` + (conCalc.length ? "" : " Calcula el programa para ver las barras.")
     + (S.base ? ` Línea base activa: ${S.base.nombre}.` : "");
@@ -171,6 +202,8 @@ function dibujar(L, escala) {
   const nd = Math.round((t1 - t0) / DIA) + 1, TW = Math.ceil(nd * ppd), H = F.length * RH, HH = 44;
   const X = (iso) => ((toT(iso) - t0) / DIA) * ppd;
   const cal = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados);
+  const cols = anchosColumnas(cols0, F, cal);
+  const LW = Math.max(160, cols.reduce((s, c) => s + c.w, 0));
 
   // Encabezado de la escala
   let head = "", fondo = "";
@@ -211,16 +244,7 @@ function dibujar(L, escala) {
       return;
     }
     const a = f.a, c = a.calc, p = S.partidas.get(a.partida), lb = S.base?.actividades?.[a.id];
-    const celda = (col) => {
-      switch (col.k) {
-        case "id": return esc(a.id); case "nombre": return esc(a.nombre); case "partida": return esc(a.partida);
-        case "dur": return duracionEfectiva(a, p) ?? ""; case "ie": return corta(c?.ie); case "te": return corta(c?.te);
-        case "ht": return c?.ht ?? ""; case "hl": return c?.hl ?? "";
-        case "bie": return corta(lb?.[0]); case "bte": return corta(lb?.[1]);
-        case "dvt": { if (!lb || !c) return ""; const dv = cal.W(c.te) - cal.W(lb[1]); return dv > 0 ? `<span class="warn">+${dv}</span>` : dv; } case "pred": return esc(predText(a.predecesoras));
-      }
-      return esc(a.codigos?.[col.k.slice(4)] || "");
-    };
+    const celda = (col) => celdaAct(col, a, cal);
     izq += `<div class="g-row g-act ${c?.critica ? "crit" : ""} ${API.puedeEditar ? "link" : ""}" data-id="${esc(a.id)}">${cols.map((col, j) =>
       `<span class="${col.num ? "num" : ""}" style="width:${col.w}px;${j === 0 ? `padding-left:${8 + f.nivel * 14}px` : ""}" title="${col.k === "pred" || col.k === "nombre" ? celda(col) : ""}">${celda(col)}</span>`).join("")}</div>`;
     if (op.base && lb) barras += `<rect x="${X(lb[0])}" y="${y + RH - 6}" width="${Math.max(2, X(lb[1]) + ppd - X(lb[0]))}" height="3" class="g-base"><title>Línea base: ${corta(lb[0])} a ${corta(lb[1])}</title></rect>`;
