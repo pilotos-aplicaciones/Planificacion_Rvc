@@ -170,27 +170,21 @@ function celdaAct(col, a, cal) {
   return esc(a.codigos?.[col.k.slice(4)] || "");
 }
 
-// v0.18: ancho de cada columna según su contenido visible (antes era fijo y cortaba el ID).
+// v0.18: ancho máximo por columna al ajustar al contenido (lo más largo se corta y se ve completo con el mouse).
 const ANCHO_MAX = { nombre: 340, pred: 260 }, ANCHO_MAX_DEF = 200;
-let CV = null;
-function anchosColumnas(cols, F, cal) {
-  CV ||= document.createElement("canvas").getContext("2d");
-  const fam = getComputedStyle(document.body).fontFamily, px = parseFloat(getComputedStyle(document.body).fontSize) * 0.85;
-  const texto = (h) => String(h).replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-  const acts = F.filter((f) => f.tipo === "act"), nivelMax = Math.max(0, ...acts.map((f) => f.nivel));
-  return cols.map((col, j) => {
-    CV.font = `600 ${px * 0.94}px ${fam}`; let w = CV.measureText(col.t).width;   // encabezado (.8rem, negrita)
-    CV.font = `${j === 0 ? "600 " : ""}${px}px ${fam}`;                            // la 1.ª columna va en negrita si es crítica
-    for (const f of acts) w = Math.max(w, CV.measureText(texto(celdaAct(col, f.a, cal))).width);
-    w = Math.min(Math.ceil(w) + 14, ANCHO_MAX[col.k] || ANCHO_MAX_DEF);
-    if (j === 0) w += 2 + nivelMax * 14;                                            // sangría de la agrupación
-    return { ...col, w: Math.max(w, col.num ? 36 : 44) };
-  });
+
+// Ajusta cada columna de la tabla izquierda al contenido real medido en pantalla (fuente real del navegador).
+function ajustarAnchos(grid, cols) {
+  const filas = [$(".g-hl", grid), ...$$(".g-act", grid)], w = cols.map(() => 0);
+  filas.forEach((r) => [...r.children].forEach((sp, j) => { if (j < w.length) w[j] = Math.max(w[j], sp.scrollWidth); }));   // solo lecturas
+  const fin = w.map((x, j) => Math.max(cols[j].num ? 36 : 44, Math.min(x + 2, (ANCHO_MAX[cols[j].k] || ANCHO_MAX_DEF) + (j === 0 ? 60 : 0))));
+  fin.forEach((x, j) => grid.style.setProperty(`--gw${j}`, x + "px"));                                                 // luego escrituras
+  grid.style.setProperty("--glw", Math.max(160, fin.reduce((a, b) => a + b, 0)) + "px");
 }
 
 function dibujar(L, escala) {
   const S = API.S, { filas: F, total } = filas(L), ppd = ESCALAS[escala].ppd, op = L.opciones || {};
-  const cols0 = (L.columnas || []).map((k) => k.startsWith("cod:") ? { k, t: k.slice(4), w: 70 } : { k, ...BASE_COLS[k] }).filter((c) => c.t);
+  const cols = (L.columnas || []).map((k) => k.startsWith("cod:") ? { k, t: k.slice(4), w: 70 } : { k, ...BASE_COLS[k] }).filter((c) => c.t);
   const conCalc = API.todas().filter((a) => a.calc);
   $("#g-info").textContent = `${total} actividad(es) mostradas de ${API.todas().length}.` + (conCalc.length ? "" : " Calcula el programa para ver las barras.")
     + (S.base ? ` Línea base activa: ${S.base.nombre}.` : "");
@@ -202,7 +196,6 @@ function dibujar(L, escala) {
   const nd = Math.round((t1 - t0) / DIA) + 1, TW = Math.ceil(nd * ppd), H = F.length * RH, HH = 44;
   const X = (iso) => ((toT(iso) - t0) / DIA) * ppd;
   const cal = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados);
-  const cols = anchosColumnas(cols0, F, cal);
   const LW = Math.max(160, cols.reduce((s, c) => s + c.w, 0));
 
   // Encabezado de la escala
@@ -246,7 +239,7 @@ function dibujar(L, escala) {
     const a = f.a, c = a.calc, p = S.partidas.get(a.partida), lb = S.base?.actividades?.[a.id];
     const celda = (col) => celdaAct(col, a, cal);
     izq += `<div class="g-row g-act ${c?.critica ? "crit" : ""} ${API.puedeEditar ? "link" : ""}" data-id="${esc(a.id)}">${cols.map((col, j) =>
-      `<span class="${col.num ? "num" : ""}" style="width:${col.w}px;${j === 0 ? `padding-left:${8 + f.nivel * 14}px` : ""}" title="${col.k === "pred" || col.k === "nombre" ? celda(col) : ""}">${celda(col)}</span>`).join("")}</div>`;
+      `<span class="${col.num ? "num" : ""}" style="width:var(--gw${j}, ${col.w}px);${j === 0 ? `padding-left:${8 + f.nivel * 14}px` : ""}" title="${col.k === "pred" || col.k === "nombre" ? celda(col) : ""}">${celda(col)}</span>`).join("")}</div>`;
     if (op.base && lb) barras += `<rect x="${X(lb[0])}" y="${y + RH - 6}" width="${Math.max(2, X(lb[1]) + ppd - X(lb[0]))}" height="3" class="g-base"><title>Línea base: ${corta(lb[0])} a ${corta(lb[1])}</title></rect>`;
     if (!c) return;
     const x1 = X(c.ie), x2 = X(c.te) + ppd;
@@ -271,8 +264,8 @@ function dibujar(L, escala) {
   });
 
   $("#g-scroll").innerHTML = `
-    <div class="g-grid" style="grid-template-columns:${LW}px ${TW}px">
-      <div class="g-hl" style="height:${HH}px">${cols.map((c) => `<span class="${c.num ? "num" : ""}" style="width:${c.w}px">${esc(c.t)}</span>`).join("")}</div>
+    <div class="g-grid" style="grid-template-columns:var(--glw, ${LW}px) ${TW}px">
+      <div class="g-hl" style="height:${HH}px">${cols.map((c, j) => `<span class="${c.num ? "num" : ""}" style="width:var(--gw${j}, ${c.w}px)">${esc(c.t)}</span>`).join("")}</div>
       <div class="g-hr"><svg width="${TW}" height="${HH}">${head}</svg></div>
       <div class="g-bl">${izq}</div>
       <div class="g-br"><svg width="${TW}" height="${H}">
@@ -280,6 +273,7 @@ function dibujar(L, escala) {
           <marker id="g-flecha-c" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L6 3L0 6Z" fill="var(--critical)"/></marker></defs>
         ${fondo}${barras}${relaciones}</svg></div>
     </div>`;
+  ajustarAnchos($(".g-grid", $("#g-scroll")), cols);
   $$(".g-grp", $("#g-scroll")).forEach((r) => (r.onclick = () => { G.colapsados.has(r.dataset.key) ? G.colapsados.delete(r.dataset.key) : G.colapsados.add(r.dataset.key); dibujar(L, escala); }));
   if (API.puedeEditar) $$(".g-act, .g-bar", $("#g-scroll")).forEach((r) => (r.onclick = () => {
     const a = API.todas().find((z) => z.id === r.dataset.id); if (a) API.abrirActividad(a);
