@@ -1,5 +1,5 @@
 // Detalle de un programa: resumen y miembros, códigos, partidas y actividades.
-import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, writeBatch }
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, writeBatch, runTransaction, onSnapshot }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, errorMsg, openModal } from "./util.js";
 import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./cpm.js";
@@ -11,14 +11,15 @@ import { tabAvance, validarAvance } from "./avance.js";
 let S = null;   // estado del programa abierto
 let CTX = null;
 
-export function resetPrograma() { S = null; }
+export function resetPrograma() { detenerCandado(); S = null; }
 
 export async function viewPrograma(ctx, id, tab) {
   CTX = ctx;
   const main = $("#main");
   if (!S || S.id !== id) {
+    if (S && S.id !== id) detenerCandado();
     main.innerHTML = `<a href="#programas" class="back">‹ Programas</a><p>Cargando…</p>`;
-    try { S = await cargar(id); }
+    try { S = await cargar(id); iniciarCandado(); }
     catch (e) { main.lastElementChild.outerHTML = `<p class="msg-error">${esc(errorMsg(e))}</p>`; return; }
     if (!S) { main.lastElementChild.outerHTML = `<p class="msg-error">El programa no existe o fue eliminado.</p>`; return; }
   }
@@ -53,7 +54,8 @@ async function cargar(id) {
     layouts: dSnap.exists() ? dSnap.data().layouts || [] : [],
     base,
     usuarios: me.admin ? await CTX.loadUsuarios() : [],
-    puedeEditar: me.admin || prog.miembros?.[me.uid] === "editor",
+    rolEditor: me.admin || prog.miembros?.[me.uid] === "editor",
+    puedeEditar: false,     // se activa al tomar el candado de edición
   };
 }
 
@@ -92,6 +94,7 @@ function render() {
     <div class="page-head">
       <div><div class="title-row"><h1>${esc(p.nombre)}</h1>${chipCalculo()}</div><p>${esc(p.proyecto)}, ${esc(p.etapa)}</p></div>
       <div class="toolbar" style="margin:0">
+        <span id="lock-area" class="toolbar" style="margin:0"></span>
         <span class="badge ${miRol ? "badge-" + miRol : "badge-lector"}">${miRol ? ROLES[miRol] : "Administrador"}</span>
         ${S.puedeEditar ? `<button id="btn-calcular" class="btn btn-primary btn-sm" ${nAct ? "" : "disabled"}>Calcular programa</button>
           <button id="btn-importar" class="btn btn-secondary btn-sm">Importar desde Excel</button>` : ""}
@@ -104,7 +107,8 @@ function render() {
     <div id="tab"></div>`;
   $("#btn-exportar").onclick = exportarExcel;
   if (S.puedeEditar) { $("#btn-importar").onclick = importarExcel; if (nAct) $("#btn-calcular").onclick = calcularPrograma; }
-  $("#btn-recargar").onclick = () => { const t = S.tab; S = null; viewPrograma(CTX, location.hash.split("/")[1], t); };
+  $("#btn-recargar").onclick = () => recargar();
+  pintarCandado();
   ({ resumen: tabResumen, codigos: tabCodigos, partidas: tabPartidas, actividades: tabActividades, gantt: (el) => tabGantt(el, apiGantt()), avance: (el) => tabAvance(el, apiAvance()) })[S.tab]($("#tab"));
 }
 
@@ -983,4 +987,116 @@ function asignarCodigosMasivo() {
       nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
       SEL = new Set(); render(); toast(`Códigos asignados a ${ids.length} actividad(es)`);
     });
+}
+
+// ---------- Recarga de datos ----------
+async function recargar() {
+  const id = S.id, tab = S.tab;
+  LOCK.unsub?.(); LOCK.unsub = null; clearInterval(LOCK.ui);   // se vuelve a suscribir al cargar
+  S = null;
+  await viewPrograma(CTX, id, tab);
+}
+
+// ---------- Candado de edición ----------
+// Documento programas/{id}/control/candado: { uid, nombre, desde, latido, solicitud }
+const EXPIRA = 3 * 60000, LATIDO = 60000, INACTIVO = 15 * 60000;
+const LOCK = { unsub: null, latido: null, ui: null, data: null, ultima: Date.now(), escuchando: false };
+const refCandado = () => doc(CTX.db, "programas", S.id, "control", "candado");
+const vigente = (d) => !!d && Date.now() - d.latido < EXPIRA;
+const esMio = (d) => vigente(d) && d.uid === CTX.me.uid;
+const hora = (ms) => new Date(ms).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+
+function iniciarCandado() {
+  if (!LOCK.escuchando) {
+    ["keydown", "mousedown", "touchstart", "wheel"].forEach((ev) => document.addEventListener(ev, () => (LOCK.ultima = Date.now()), { passive: true }));
+    window.addEventListener("beforeunload", () => { if (S?.puedeEditar) deleteDoc(refCandado()).catch(() => {}); });
+    LOCK.escuchando = true;
+  }
+  LOCK.unsub?.(); clearInterval(LOCK.ui);
+  const idProg = S.id;
+  LOCK.unsub = onSnapshot(refCandado(), (snap) => {
+    if (!S || S.id !== idProg) return;
+    const antes = LOCK.data;
+    LOCK.data = snap.exists() ? snap.data() : null;
+    const tenia = S.puedeEditar, tiene = S.rolEditor && esMio(LOCK.data);
+    if (tenia && !tiene) { S.puedeEditar = false; pararLatido(); toast("Ya no tienes la edición del programa (fue liberada o expiró)."); render(); return; }
+    if (!tenia && tiene) { S.puedeEditar = true; iniciarLatido(); render(); return; }
+    if (antes && vigente(antes) && antes.uid !== CTX.me.uid && !vigente(LOCK.data))
+      toast(`${antes.nombre} terminó de editar. Presiona "Recargar" para ver los cambios.`);
+    pintarCandado();
+  }, (e) => console.error("candado", e));
+  LOCK.ui = setInterval(() => { if (S?.id === idProg) pintarCandado(); }, 30000);   // refleja expiraciones
+}
+function detenerCandado() {
+  LOCK.unsub?.(); LOCK.unsub = null; clearInterval(LOCK.ui); pararLatido();
+  if (S?.puedeEditar) { const ref = refCandado(), uid = CTX.me.uid; S.puedeEditar = false; liberarRef(ref, uid).catch(() => {}); }
+  LOCK.data = null;
+}
+function iniciarLatido() {
+  pararLatido(); LOCK.ultima = Date.now();
+  LOCK.latido = setInterval(async () => {
+    if (!S?.puedeEditar) return pararLatido();
+    if (Date.now() - LOCK.ultima > INACTIVO) { await liberarEdicion(); toast("Se liberó la edición por 15 minutos sin actividad."); return; }
+    try {
+      await runTransaction(CTX.db, async (tx) => {
+        const s = await tx.get(refCandado());
+        if (!s.exists() || s.data().uid !== CTX.me.uid) throw new Error("perdido");
+        tx.update(refCandado(), { latido: Date.now() });
+      });
+    } catch (e) { console.warn("latido", e); }
+  }, LATIDO);
+}
+function pararLatido() { clearInterval(LOCK.latido); LOCK.latido = null; }
+
+async function tomarEdicion() {
+  const me = CTX.me;
+  try {
+    await runTransaction(CTX.db, async (tx) => {
+      const s = await tx.get(refCandado()), d = s.exists() ? s.data() : null;
+      if (vigente(d) && d.uid !== me.uid) throw new Error(`El programa está en edición por ${d.nombre}.`);
+      tx.set(refCandado(), { uid: me.uid, nombre: me.nombre, desde: Date.now(), latido: Date.now(), solicitud: null });
+    });
+    toast("Modo edición: datos recargados");
+    await recargar();          // datos frescos; el candado propio activa la edición
+  } catch (e) { toast(errorMsg(e)); }
+}
+async function liberarRef(ref, uid) {
+  await runTransaction(CTX.db, async (tx) => {
+    const s = await tx.get(ref);
+    if (s.exists() && s.data().uid === uid) tx.delete(ref);
+  });
+}
+async function liberarEdicion() {
+  pararLatido();
+  try { await liberarRef(refCandado(), CTX.me.uid); } catch (e) { toast(errorMsg(e)); }
+  S.puedeEditar = false; render();
+}
+async function solicitarEdicion() {
+  try { await updateDoc(refCandado(), { solicitud: { uid: CTX.me.uid, nombre: CTX.me.nombre, fecha: Date.now() } }); toast("Solicitud enviada a quien está editando"); }
+  catch (e) { toast(errorMsg(e)); }
+}
+async function forzarLiberacion() {
+  if (!confirm(`¿Forzar la liberación? ${LOCK.data?.nombre} perderá los cambios que no haya guardado.`)) return;
+  try { await deleteDoc(refCandado()); toast("Edición liberada"); } catch (e) { toast(errorMsg(e)); }
+}
+function pintarCandado() {
+  const el = $("#lock-area"); if (!el || !S) return;
+  const d = LOCK.data, otro = vigente(d) && d.uid !== CTX.me.uid;
+  let h = "";
+  if (S.puedeEditar) {
+    h = `<span class="lock-chip mine">Editando</span>`;
+    if (d?.solicitud && d.solicitud.uid !== CTX.me.uid) h += `<span class="lock-chip req">${esc(d.solicitud.nombre)} solicita editar</span><button id="lk-liberar" class="btn btn-danger btn-sm">Liberar edición</button>`;
+    else h += `<button id="lk-liberar" class="btn btn-secondary btn-sm">Terminar edición</button>`;
+  } else if (otro) {
+    h = `<span class="lock-chip other">En edición por ${esc(d.nombre)} (desde ${hora(d.desde)})</span>`;
+    if (S.rolEditor) h += d.solicitud?.uid === CTX.me.uid ? `<span class="help">Solicitud enviada</span>` : `<button id="lk-pedir" class="btn btn-secondary btn-sm">Solicitar edición</button>`;
+    if (CTX.me.admin) h += `<button id="lk-forzar" class="btn btn-danger btn-sm">Forzar liberación</button>`;
+  } else if (S.rolEditor) {
+    h = `<button id="lk-tomar" class="btn btn-primary btn-sm">Editar programa</button>`;
+  }
+  el.innerHTML = h;
+  $("#lk-tomar", el) && ($("#lk-tomar", el).onclick = tomarEdicion);
+  $("#lk-liberar", el) && ($("#lk-liberar", el).onclick = liberarEdicion);
+  $("#lk-pedir", el) && ($("#lk-pedir", el).onclick = solicitarEdicion);
+  $("#lk-forzar", el) && ($("#lk-forzar", el).onclick = forzarLiberacion);
 }

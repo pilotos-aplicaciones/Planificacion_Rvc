@@ -1,6 +1,7 @@
 rules_version = '2';
-// Reglas de seguridad – App de Planificación RVC (Sesión 3)
+// Reglas de seguridad – App de Planificación RVC (v0.16: candado de edición)
 // Roles: administrador global (usuarios/{uid}.admin) y rol por programa (editor | lector).
+// Los editores solo escriben el contenido del programa si tienen el candado vigente (3 minutos desde el último latido).
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -13,6 +14,13 @@ service cloud.firestore {
     function rolEn(progId) {
       return get(/databases/$(database)/documents/programas/$(progId)).data.miembros.get(request.auth.uid, '');
     }
+    function esEditor(progId) { return signedIn() && (isAdmin() || rolEn(progId) == 'editor'); }
+    function tieneCandado(progId) {
+      let ruta = /databases/$(database)/documents/programas/$(progId)/control/candado;
+      return exists(ruta)
+        && get(ruta).data.uid == request.auth.uid
+        && request.time.toMillis() - get(ruta).data.latido < 180000;
+    }
     function miembrosValidos() {
       let d = request.resource.data;
       return d.miembros is map && d.miembrosUids is list
@@ -20,7 +28,6 @@ service cloud.firestore {
         && d.miembros.values().toSet().hasOnly(['editor', 'lector']);
     }
 
-    // Usuarios: cada uno se registra solo (sin ser admin). Solo un admin otorga admin.
     match /usuarios/{uid} {
       allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow list: if isAdmin();
@@ -33,28 +40,35 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Programas tipo: solo administradores.
     match /programasTipo/{id} {
       allow read, write: if isAdmin();
     }
 
-    // Programas: los ven sus miembros; los crea y borra un admin; el editor no cambia miembros.
     match /programas/{progId} {
       allow get: if isAdmin()
         || (signedIn() && resource.data.miembros.get(request.auth.uid, '') != '');
       allow list: if isAdmin()
         || (signedIn() && request.auth.uid in resource.data.miembrosUids);
       allow create: if isAdmin() && miembrosValidos();
+      // Admin: miembros y datos. Editor: datos del programa (no miembros) y solo con candado.
       allow update: if (isAdmin() && miembrosValidos())
         || (signedIn() && resource.data.miembros.get(request.auth.uid, '') == 'editor'
             && request.resource.data.miembros == resource.data.miembros
-            && request.resource.data.miembrosUids == resource.data.miembrosUids);
+            && request.resource.data.miembrosUids == resource.data.miembrosUids
+            && tieneCandado(progId));
       allow delete: if isAdmin();
 
-      // Contenido del programa (partidas, definiciones, candado): leen miembros, escriben editores.
+      // Candado: lo leen los miembros; lo toman, renuevan, solicitan y liberan los editores.
+      match /control/{docId} {
+        allow read: if isAdmin() || rolEn(progId) in ['editor', 'lector'];
+        allow write: if esEditor(progId);
+      }
+
+      // Contenido (partidas, definiciones, líneas base): leen miembros; escriben editores con candado.
       match /{sub=**} {
         allow read: if isAdmin() || rolEn(progId) in ['editor', 'lector'];
-        allow write: if isAdmin() || rolEn(progId) == 'editor';
+        allow create, update: if esEditor(progId) && tieneCandado(progId);
+        allow delete: if isAdmin() || (esEditor(progId) && tieneCandado(progId));
       }
     }
   }

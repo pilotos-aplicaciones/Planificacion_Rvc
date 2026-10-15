@@ -193,3 +193,7 @@ tr.av-dirty td { background: #FFF8E1; }
 .g-base { fill: #6B7785; }
 td.chk, th:first-child input[type=checkbox] { cursor: pointer; }
 tr.sel td { background: #EEF3FB; }
+.lock-chip { font-size: .82rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+.lock-chip.mine { background: #E4EAF4; color: var(--plan); }
+.lock-chip.other { background: #FFF3D6; color: #8A5A00; }
+.lock-chip.req { background: #FBEDEC; color: var(--critical); }
