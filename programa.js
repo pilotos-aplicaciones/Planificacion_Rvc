@@ -5,6 +5,7 @@ import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, er
 import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./cpm.js";
 import { parsePredecesoras, predText, validarActividad, buscarCiclo, unidadesDuplicadas, msgDuplicada } from "./validacion.js";
 import { leerExcel } from "./importar.js";
+import { construirLibro } from "./exportar.js";
 import { tabGantt } from "./gantt.js";
 import { tabAvance, validarAvance } from "./avance.js";
 
@@ -768,83 +769,16 @@ async function exportarExcel() {
     await cargarXLSX();
     const pos = posPartida();
     const acts = todas().sort((a, b) => pos.get(a.partida) - pos.get(b.partida) || a.id.localeCompare(b.id));
-    const partidas = Object.fromEntries(S.partidas);
     const probs = problemas();
     const r = probs.length || !acts.length ? null
-      : calcular({ actividades: acts, partidas, codigos: S.codigos, programa: S.prog, feriados: S.feriados });
-    const ok = r && !r.errores.length;
-    const X = window.XLSX, wb = X.utils.book_new();
-    const hoja = (nombre, filas, anchos, colsFecha = []) => {
-      const ws = X.utils.aoa_to_sheet(filas);
-      for (let i = 1; i < filas.length; i++) colsFecha.forEach((c) => {
-        const cell = ws[X.utils.encode_cell({ r: i, c })];
-        if (cell && cell.t === "n") cell.z = "dd-mm-yyyy";
-      });
-      ws["!cols"] = anchos.map((w) => ({ wch: w }));
-      X.utils.book_append_sheet(wb, ws, nombre);
-    };
-
-    // 1. Actividades
-    const cods = S.codigos.map((c) => c.codigo);
-    const cab = ["ID", "Nombre", "Partida", "Modo", "Cantidad", "Unidad", "Rendimiento diario", "Ritmo (unid/día)", "Duración (días)",
-      "Predecesoras", ...cods, "Tipo restricción", "Fecha restricción",
-      "Día IT (n° hábil)", "Día TT (exclusivo)", "Día IT tardío", "Día TT tardío (exclusivo)",
-      "Inicio temprano", "Término temprano", "Inicio tardío", "Término tardío", "Holgura total", "Holgura libre", "Crítica",
-      "Estado", "Inicio real", "Término real", "% avance", "Cantidad ejecutada", "Duración remanente",
-      `Inicio base${S.base ? " (" + S.base.nombre + ")" : ""}`, "Término base", "Desviación término (días hábiles)"];
-    const calX = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados);
-    const filas = [cab, ...acts.map((a) => {
-      const p = partidas[a.partida], x = ok ? r.res.get(a.id) : null;
-      return [a.id, a.nombre, a.partida, MODOS[p?.modo] || "", a.cantidad ?? "", p?.modo === "cantidad" ? p.unidad : "",
-        p?.modo === "cantidad" ? p.rendimiento : "", p?.modo === "ritmo" ? p.ritmo : "", duracionEfectiva(a, p) ?? "",
-        predText(a.predecesoras), ...cods.map((c) => a.codigos?.[c] || ""),
-        a.restriccion?.tipo ? RESTRICCIONES[a.restriccion.tipo] : "", aFecha(a.restriccion?.fecha),
-        x ? x.es : "", x ? x.es + x.dur : "", x ? x.ls : "", x ? x.ls + x.dur : "",
-        aFecha(x?.ie), aFecha(x?.te), aFecha(x?.it), aFecha(x?.tt), x?.ht ?? "", x?.hl ?? "", x ? (x.critica ? "Sí" : "No") : "",
-        { no: "No iniciada", curso: "En curso", term: "Terminada" }[a.avance?.estado || "no"], aFecha(a.avance?.inicioReal), aFecha(a.avance?.terminoReal),
-        a.avance?.pct ?? "", a.avance?.ejecutado ?? "", x ? x.rem : "",
-        aFecha(S.base?.actividades?.[a.id]?.[0]), aFecha(S.base?.actividades?.[a.id]?.[1]),
-        x && S.base?.actividades?.[a.id] ? calX.W(x.te) - calX.W(S.base.actividades[a.id][1]) : ""];
-    })];
-    const b = 10 + cods.length; // primera columna después de los códigos
-    hoja("Actividades", filas, [12, 30, 9, 13, 9, 7, 10, 9, 9, 28, ...cods.map(() => 8), 20, 12, 9, 9, 9, 9, 12, 12, 12, 12, 8, 8, 7],
-      [b + 1, b + 6, b + 7, b + 8, b + 9, b + 14, b + 15, b + 19, b + 20]);
-
-    // 2. Relaciones (lógica + ritmo)
-    const rel = [["Predecesora", "Sucesora", "Tipo", "Desfase (días hábiles)", "Origen"]];
-    acts.forEach((a) => (a.predecesoras || []).forEach((x) => rel.push([x.id, a.id, x.tipo === "SS" ? "II" : "FI", Number(x.desfase) || 0, "Lógica (cargada)"])));
-    relacionesRitmo(acts, partidas, S.codigos).forEach((x) => rel.push([x.de, x.a, "II", x.desfase, `Ritmo ${x.de.split("-")[0]} (automática)`]));
-    hoja("Relaciones", rel, [12, 12, 6, 20, 22]);
-
-    // 3. Partidas
-    hoja("Partidas", [["ID", "Nombre", "Modo", "Unidad", "Rendimiento diario", "Redondeo", "Ritmo (unid/día)", "Duración por unidad (días)", "Códigos de unidad", "Dirección", "N° actividades"],
-      ...[...S.partidas.values()].map((p) => [p.id, p.nombre, MODOS[p.modo], p.unidad || "", p.rendimiento ?? "", p.redondeo || "",
-        p.ritmo ?? "", p.modo === "ritmo" ? p.duracionUnidad || 1 : "", (p.codigosUnidad || []).join("; "), p.direccion || "", p.actividades.length])], [10, 26, 14, 8, 12, 10, 12, 14, 18, 12, 12]);
-
-    // 4. Calendario
-    hoja("Calendario", [["Parámetro", "Valor"], ["Programa", S.prog.nombre], ["Fecha de inicio", aFecha(S.prog.fechaInicio)],
-      ["Calendario", CALENDARIOS[S.prog.calendario]], ["Fecha de corte", S.prog.fechaCorte ? aFecha(S.prog.fechaCorte) : "Sin corte"],
-      ["Término calculado", ok ? aFecha(r.termino) : "Sin calcular"], [],
-      ["Convención", "Día 0 = primer día hábil desde la fecha de inicio. TT = IT + duración (exclusivo): la actividad ocupa los días IT a TT-1."],
-      ["Avance", "Terminadas: fijas en fechas reales. En curso: remanente desde el día hábil siguiente al corte (lógica retenida). No iniciadas: no antes del día siguiente al corte."],
-      ["FI", "Sucesora: IT ≥ TT de la predecesora + desfase"], ["II", "Sucesora: IT ≥ IT de la predecesora + desfase"],
-      ["Desfase", "En días hábiles; puede ser negativo (traslape). Texto: CERA-0001 FI+2, TABI-0002 II-1"],
-      ["Ritmo", "Unidad k de una partida: desfase acumulado = ENTERO((k-1)/ritmo), ordenadas por los códigos de unidad"], [],
-      ["Feriado", "Fecha"], ...S.feriados.map((f) => [f.nombre, aFecha(f.fecha)])], [18, 90], [1]);
-
-    // 5. Días hábiles
-    if (ok) {
-      const cal = crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados);
-      const dias = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
-      const minimo = Math.min(0, ...[...r.res.values()].map((x) => x.ls));
-      const tabla = [["Día hábil", "Fecha", "Día"]];
-      for (let i = minimo; i < r.duracionTotal; i++) { const f = cal.fecha(i); tabla.push([i, aFecha(f), dias[new Date(f + "T12:00:00Z").getUTCDay()]]); }
-      hoja("Días hábiles", tabla, [10, 12, 11], [1]);
-    }
-
+      : calcular({ actividades: acts, partidas: Object.fromEntries(S.partidas), codigos: S.codigos, programa: S.prog, feriados: S.feriados });
+    const { wb, ok } = construirLibro(window.XLSX, {
+      prog: S.prog, partidas: [...S.partidas.values()], codigos: S.codigos, feriados: S.feriados, acts, r, base: S.base,
+      cal: crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados),
+    });
     const nombre = `Programa_${(S.prog.nombre || "programa").replace(/[^\p{L}\p{N}]+/gu, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    X.writeFile(wb, nombre);
-    toast(ok ? "Excel exportado con el cálculo actual" : "Excel exportado sin cálculo (hay problemas por corregir o no hay actividades)");
+    window.XLSX.writeFile(wb, nombre);
+    toast(ok ? "Excel exportado (formato de importación + resultados del cálculo)" : "Excel exportado sin resultados (hay problemas por corregir o no hay actividades)");
   } catch (e) { toast(errorMsg(e)); }
   finally { btn.disabled = false; btn.textContent = "Exportar a Excel"; }
 }
