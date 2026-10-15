@@ -58,3 +58,18 @@ export function buscarCiclo(acts) {
   for (const a of acts) if (!estado.get(a.id)) { const c = dfs(a.id); if (c) return c; }
   return null;
 }
+
+// Clave natural (v0.16): en una partida con códigos de unidad, cada combinación de valores
+// (ej. Piso + Depto) identifica una sola actividad. Devuelve las repetidas.
+export function unidadesDuplicadas(acts, partidaDe) {
+  const vistos = new Map(), dup = [];
+  acts.forEach((a) => {
+    const cu = partidaDe(a.partida)?.codigosUnidad || [];
+    if (!cu.length || !cu.every((c) => a.codigos?.[c])) return;
+    const k = a.partida + "|" + cu.map((c) => a.codigos[c]).join("|");
+    if (vistos.has(k)) dup.push({ id: a.id, otra: vistos.get(k), partida: a.partida, unidad: cu.map((c) => `${c} ${a.codigos[c]}`).join(", ") });
+    else vistos.set(k, a.id);
+  });
+  return dup;
+}
+export const msgDuplicada = (d) => `${d.id} repite la unidad de ${d.otra} en la partida ${d.partida} (${d.unidad})`;

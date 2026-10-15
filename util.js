@@ -18,7 +18,7 @@ export function toast(msg) {
 }
 export function errorMsg(e) {
   console.error(e);
-  if (e?.code === "permission-denied") return "No tienes permiso para esta acción.";
+  if (e?.code === "permission-denied") return "No se pudo guardar: no tienes la edición del programa (expiró o la tomó otra persona) o los datos cambiaron mientras tanto. Presiona Recargar e inténtalo de nuevo.";
   return e?.message && !e.code ? e.message : "No se pudo completar la acción. Revisa tu conexión e inténtalo de nuevo.";
 }
 // Modal: onSubmit recibe (FormData, form). Si lanza error, se muestra y el modal sigue abierto.

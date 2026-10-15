@@ -3,7 +3,7 @@ import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, writeBa
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { $, $$, esc, ROLES, CALENDARIOS, MODOS, RESTRICCIONES, fmtNum, toast, errorMsg, openModal } from "./util.js";
 import { calcular, duracionEfectiva, crearCalendario, relacionesRitmo } from "./cpm.js";
-import { parsePredecesoras, predText, validarActividad, buscarCiclo } from "./validacion.js";
+import { parsePredecesoras, predText, validarActividad, buscarCiclo, unidadesDuplicadas, msgDuplicada } from "./validacion.js";
 import { leerExcel } from "./importar.js";
 import { tabGantt } from "./gantt.js";
 import { tabAvance, validarAvance } from "./avance.js";
@@ -58,6 +58,10 @@ async function cargar(id) {
     puedeEditar: false,     // se activa al tomar el candado de edición
   };
 }
+
+// Revisión por partida (v0.17): cada guardado sube rev en 1; las reglas rechazan un guardado sobre datos viejos.
+const conRev = (p, campos) => ({ ...campos, rev: (p.rev || 0) + 1 });
+const subirRev = (...ps) => ps.forEach((p) => (p.rev = (p.rev || 0) + 1));
 
 // Partidas en su orden de secuencia (campo orden; las antiguas sin orden van al final por ID)
 function ordenadas(entradas) {
@@ -147,7 +151,7 @@ function tabResumen(el) {
     <div class="table-wrap" style="max-width:820px"><table><thead><tr><th>Nombre</th><th>Creada</th><th>Fecha de corte</th><th>Término</th><th>Comparar</th>${ed ? "<th></th>" : ""}</tr></thead>
       <tbody>${(p.lineasBase || []).map((b) => `<tr><td>${esc(b.nombre)}</td><td>${esc(new Date(b.fecha).toLocaleDateString("es-CL"))}</td>
         <td>${esc(b.corte ? fechaCL(b.corte) : "Sin corte")}</td><td class="mono">${esc(fechaCL(b.termino))}</td>
-        <td>${p.lineaBaseActiva === b.id ? `<span class="badge badge-ok">Activa</span>` : ed ? `<button class="btn btn-secondary btn-sm lb-act" data-id="${esc(b.id)}">Usar para comparar</button>` : ""}</td>
+        <td>${p.lineaBaseActiva === b.id ? `<span class="badge badge-ok">Activa</span>` : S.rolEditor ? `<button class="btn btn-secondary btn-sm lb-act" data-id="${esc(b.id)}">Usar para comparar</button>` : ""}</td>
         ${ed ? `<td><button class="icon-btn lb-del" data-id="${esc(b.id)}" aria-label="Eliminar">✕</button></td>` : ""}</tr>`).join("")
         || `<tr><td colspan="6" class="muted">Sin líneas base.</td></tr>`}</tbody></table></div>
     ${ed ? `<div class="row-actions"><button id="btn-lb" class="btn btn-secondary">Crear línea base desde el último cálculo</button></div>` : ""}
@@ -159,6 +163,17 @@ function tabResumen(el) {
         <button id="btn-agregar" class="btn btn-primary">Agregar</button></div>
       <p class="help">¿No aparece la persona? Debe ingresar una vez a la app con su cuenta Google para quedar registrada.</p>
       <div class="row-actions" style="margin-top:32px"><button id="btn-eliminar" class="btn btn-danger">Eliminar programa</button></div>` : ""}`;
+  // Elegir la línea base para comparar es una preferencia de vista: basta el rol de editor (sin candado).
+  if (S.rolEditor) {
+    $$(".lb-act", el).forEach((bt) => (bt.onclick = async () => {
+      try {
+        const snap = await getDoc(doc(CTX.db, "programas", S.id, "lineasBase", bt.dataset.id));
+        if (!snap.exists()) throw new Error("La línea base ya no existe.");
+        await updateDoc(refProg(S.id), { lineaBaseActiva: bt.dataset.id });
+        S.prog.lineaBaseActiva = bt.dataset.id; S.base = { id: snap.id, ...snap.data() }; render(); toast("Línea base activa cambiada");
+      } catch (e) { toast(errorMsg(e)); }
+    }));
+  }
   if (ed) {
     $("#btn-lb").onclick = () => {
       const k = S.prog.calculo;
@@ -182,14 +197,6 @@ function tabResumen(el) {
           render(); toast(`Línea base "${nombre}" creada y activa`);
         });
     };
-    $$(".lb-act", el).forEach((bt) => (bt.onclick = async () => {
-      try {
-        const snap = await getDoc(doc(CTX.db, "programas", S.id, "lineasBase", bt.dataset.id));
-        if (!snap.exists()) throw new Error("La línea base ya no existe.");
-        await updateDoc(refProg(S.id), { lineaBaseActiva: bt.dataset.id });
-        S.prog.lineaBaseActiva = bt.dataset.id; S.base = { id: snap.id, ...snap.data() }; render(); toast("Línea base activa cambiada");
-      } catch (e) { toast(errorMsg(e)); }
-    }));
     $$(".lb-del", el).forEach((bt) => (bt.onclick = async () => {
       const m = (S.prog.lineasBase || []).find((x) => x.id === bt.dataset.id);
       if (!confirm(`¿Eliminar la línea base "${m?.nombre}"? No se puede deshacer.`)) return;
@@ -390,10 +397,10 @@ function tabPartidas(el) {
     const lista = [...S.partidas.values()], i = +b.dataset.i, j = i + +b.dataset.d;
     [lista[i], lista[j]] = [lista[j], lista[i]];
     try {
-      const batch = writeBatch(CTX.db);
-      lista.forEach((p, k) => { if (p.orden !== k + 1) { batch.update(refPart(p.id), { orden: k + 1 }); } });
+      const batch = writeBatch(CTX.db), cambiadas = lista.filter((p, k) => p.orden !== k + 1);
+      lista.forEach((p, k) => { if (p.orden !== k + 1) { batch.update(refPart(p.id), conRev(p, { orden: k + 1 })); } });
       await batch.commit();
-      lista.forEach((p, k) => (p.orden = k + 1));
+      subirRev(...cambiadas); lista.forEach((p, k) => (p.orden = k + 1));
       S.partidas = ordenadas([...S.partidas.entries()]); render();
     } catch (e) { toast(errorMsg(e)); }
   }));
@@ -454,12 +461,17 @@ function modalPartida(p) {
         if (!d.codigosUnidad.length) errs.push("Elige al menos un código de unidad (crea los códigos en la pestaña Códigos).");
         if (new Set(d.codigosUnidad).size !== d.codigosUnidad.length) errs.push("Un código de unidad está repetido.");
       }
+      if (!nuevo && d.codigosUnidad.length) {
+        const pd = { ...p, ...d }, dup = unidadesDuplicadas(todas(), (pid) => (pid === id ? pd : S.partidas.get(pid)));
+        dup.slice(0, 5).forEach((x) => errs.push(cap(msgDuplicada(x)) + "."));
+        if (dup.length > 5) errs.push(`… y ${dup.length - 5} unidad(es) repetida(s) más.`);
+      }
       if (errs.length) throw new Error(errs.join("\n"));
       if (nuevo) {
         d.orden = Math.max(0, ...[...S.partidas.values()].map((x, i) => x.orden ?? i + 1)) + 1;
-        await setDoc(refPart(id), { ...d, actividades: [] }); S.partidas.set(id, { ...d, actividades: [] });
+        await setDoc(refPart(id), { ...d, actividades: [], rev: 1 }); S.partidas.set(id, { ...d, actividades: [], rev: 1 });
       }
-      else { await updateDoc(refPart(id), d); Object.assign(S.partidas.get(id), d); }
+      else { const pp = S.partidas.get(id); await updateDoc(refPart(id), conRev(pp, d)); Object.assign(pp, d); subirRev(pp); }
       S.partidas = ordenadas([...S.partidas.entries()]);
       render(); toast(nuevo ? "Partida creada" : "Partida guardada");
     },
@@ -590,7 +602,7 @@ function modalActividad(orig, partidaSugerida) {
         if (usan.length) throw new Error(`No se puede eliminar: es predecesora de ${usan.slice(0, 6).join(", ")}${usan.length > 6 ? "…" : ""}. Quítala de esas actividades primero.`);
         if (!confirm(`¿Eliminar la actividad ${a.id}?`)) return false;
         const p = S.partidas.get(a.partida), arr = p.actividades.filter((x) => x.id !== a.id);
-        await updateDoc(refPart(p.id), { actividades: arr }); p.actividades = arr; render(); toast("Actividad eliminada"); return;
+        await updateDoc(refPart(p.id), conRev(p, { actividades: arr })); p.actividades = arr; subirRev(p); render(); toast("Actividad eliminada"); return;
       }
       const g = (k) => String(fd.get(k) ?? "").trim();
       const n = (k) => (g(k) === "" ? null : Number(g(k).replace(",", ".")));
@@ -622,6 +634,8 @@ function modalActividad(orig, partidaSugerida) {
       const resto = todasAct.filter((x) => x.id !== (orig?.id ?? id));
       const ids = new Set([...resto.map((x) => x.id), id]);
       errs.push(...validar(datos, ids).map((m) => cap(m) + "."));
+      unidadesDuplicadas([...resto, datos], (pid) => S.partidas.get(pid)).filter((d) => d.id === id || d.otra === id)
+        .forEach((d) => errs.push(cap(msgDuplicada(d)) + ". Cada unidad va una sola vez por partida."));
       if (!errs.length) {
         const ciclo = buscarCiclo([...resto, datos]);
         if (ciclo) errs.push(`Se formaría un ciclo lógico: ${ciclo.join(" → ")}.`);
@@ -632,11 +646,11 @@ function modalActividad(orig, partidaSugerida) {
         const o = S.partidas.get(orig.partida);
         const arrO = o.actividades.filter((x) => x.id !== orig.id), arrD = [...p.actividades, datos];
         const b = writeBatch(CTX.db);
-        b.update(refPart(o.id), { actividades: arrO }); b.update(refPart(p.id), { actividades: arrD });
-        await b.commit(); o.actividades = arrO; p.actividades = arrD;
+        b.update(refPart(o.id), conRev(o, { actividades: arrO })); b.update(refPart(p.id), conRev(p, { actividades: arrD }));
+        await b.commit(); o.actividades = arrO; p.actividades = arrD; subirRev(o, p);
       } else {
         const arr = orig ? p.actividades.map((x) => (x.id === id ? datos : x)) : [...p.actividades, datos];
-        await updateDoc(refPart(p.id), { actividades: arr }); p.actividades = arr;
+        await updateDoc(refPart(p.id), conRev(p, { actividades: arr })); p.actividades = arr; subirRev(p);
       }
       render(); toast(nuevo ? `Actividad ${id} creada` : "Actividad guardada");
     },
@@ -714,6 +728,7 @@ async function calcularPrograma() {
   const btn = $("#btn-calcular"); if (btn) { btn.disabled = true; btn.textContent = "Calculando…"; }
   try {
     const r = calcular({ actividades: todas(), partidas: Object.fromEntries(S.partidas), codigos: S.codigos, programa: S.prog, feriados: S.feriados });
+    r.errores.unshift(...unidadesDuplicadas(todas(), (pid) => S.partidas.get(pid)).map((d) => msgDuplicada(d) + "."));
     if (r.errores.length) {
       openModal(`<h2>No se pudo calcular</h2><ul>${r.errores.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>
         <div class="modal-actions"><button class="btn btn-primary" value="cancel">Entendido</button></div>`, async () => {});
@@ -722,13 +737,13 @@ async function calcularPrograma() {
     const batch = writeBatch(CTX.db), nuevas = new Map();
     for (const p of S.partidas.values()) {
       const arr = p.actividades.map((a) => { const x = r.res.get(a.id); return { ...a, calc: { dur: x.dur, rem: x.rem, estado: x.estado, ir: x.ir || null, ie: x.ie, te: x.te, it: x.it, tt: x.tt, ht: x.ht, hl: x.hl, critica: x.critica } }; });
-      nuevas.set(p.id, arr); batch.update(refPart(p.id), { actividades: arr });
+      nuevas.set(p.id, arr); batch.update(refPart(p.id), conRev(p, { actividades: arr }));
     }
     const criticas = [...r.res.values()].filter((x) => x.critica).length;
     const calculo = { fecha: new Date().toISOString(), termino: r.termino, duracion: r.duracionTotal, criticas, corte: S.prog.fechaCorte || null, firma: firma(), por: CTX.me.uid };
     batch.update(refProg(S.id), { calculo });
     await batch.commit();
-    nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+    nuevas.forEach((arr, id) => { const x = S.partidas.get(id); x.actividades = arr; subirRev(x); });
     S.prog.calculo = calculo;
     render(); toast(`Programa calculado: término ${fechaCL(r.termino)}`);
   } catch (e) { toast(errorMsg(e)); if (btn) { btn.disabled = false; btn.textContent = "Calcular programa"; } }
@@ -903,7 +918,7 @@ function importarExcel() {
         if ((form.elements.usarCal?.value || "excel") === "excel")
           b.update(refProg(S.id), { fechaInicio: datos.programa.fechaInicio, calendario: datos.programa.calendario });
         b.set(refDef(), { codigos: datos.codigos, feriados: datos.feriados }, { merge: true });
-        datos.partidas.forEach((p) => b.set(refPart(p.id), { ...p, actividades: datos.actividades.filter((a) => a.partida === p.id) }));
+        datos.partidas.forEach((p) => b.set(refPart(p.id), { ...p, actividades: datos.actividades.filter((a) => a.partida === p.id), rev: 1 }));
         await b.commit();
         const id = S.id; S = null;
         toast(`Importadas ${datos.actividades.length} actividades. Presiona "Calcular programa".`);
@@ -917,7 +932,7 @@ function importarExcel() {
 // ---------- Puente con el Gantt ----------
 function apiGantt() {
   return {
-    S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar,
+    S, todas, posPartida, estadoCalculo, puedeEditar: S.puedeEditar, puedeLayouts: S.rolEditor,
     calendario: () => crearCalendario(S.prog.fechaInicio, S.prog.calendario, S.feriados),
     abrirActividad: (a) => modalActividad(a),
     guardarLayouts: async (lista) => { await setDoc(refDef(), { layouts: lista }, { merge: true }); S.layouts = lista; },
@@ -944,10 +959,10 @@ function apiAvance() {
       for (const p of S.partidas.values()) {
         if (!p.actividades.some((a) => cambios.has(a.id))) continue;
         const arr = p.actividades.map((a) => (cambios.has(a.id) ? { ...a, avance: cambios.get(a.id) } : a));
-        nuevas.set(p.id, arr); batch.update(refPart(p.id), { actividades: arr });
+        nuevas.set(p.id, arr); batch.update(refPart(p.id), conRev(p, { actividades: arr }));
       }
       await batch.commit();
-      nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+      nuevas.forEach((arr, id) => { const x = S.partidas.get(id); x.actividades = arr; subirRev(x); });
     },
   };
 }
@@ -974,6 +989,8 @@ function asignarCodigosMasivo() {
       };
       const todasAct = todas(), ids0 = new Set(todasAct.map((a) => a.id)), errs = [];
       ids.forEach((id) => { const a = aplicar(todasAct.find((x) => x.id === id)); validar(a, ids0).forEach((m) => errs.push(`${id}: ${m}`)); });
+      const selA = new Set(ids);
+      unidadesDuplicadas(todasAct.map((a) => (selA.has(a.id) ? aplicar(a) : a)), (pid) => S.partidas.get(pid)).forEach((d) => errs.push(msgDuplicada(d)));
       if (errs.length) throw new Error(`No se aplicó ningún cambio:\n${errs.slice(0, 8).join("\n")}${errs.length > 8 ? `\n… y ${errs.length - 8} más` : ""}`);
       const resumen = cambios.map(([c, v]) => `${c}: ${v === "__del" ? "quitar" : v}`).join(", ");
       if (!confirm(`Se modificarán ${ids.length} actividad(es).\n${resumen}\n\n¿Confirmar?`)) return false;
@@ -981,10 +998,10 @@ function asignarCodigosMasivo() {
       for (const pt of S.partidas.values()) {
         if (!pt.actividades.some((a) => sel.has(a.id))) continue;
         const arr = pt.actividades.map((a) => (sel.has(a.id) ? aplicar(a) : a));
-        nuevas.set(pt.id, arr); batch.update(refPart(pt.id), { actividades: arr });
+        nuevas.set(pt.id, arr); batch.update(refPart(pt.id), conRev(pt, { actividades: arr }));
       }
       await batch.commit();
-      nuevas.forEach((arr, id) => (S.partidas.get(id).actividades = arr));
+      nuevas.forEach((arr, id) => { const x = S.partidas.get(id); x.actividades = arr; subirRev(x); });
       SEL = new Set(); render(); toast(`Códigos asignados a ${ids.length} actividad(es)`);
     });
 }

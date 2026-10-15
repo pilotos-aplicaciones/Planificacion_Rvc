@@ -1,5 +1,5 @@
 rules_version = '2';
-// Reglas de seguridad – App de Planificación RVC (v0.16: candado de edición)
+// Reglas de seguridad – App de Planificación RVC (v0.17: candado de edición + revisión por partida)
 // Roles: administrador global (usuarios/{uid}.admin) y rol por programa (editor | lector).
 // Los editores solo escriben el contenido del programa si tienen el candado vigente (3 minutos desde el último latido).
 service cloud.firestore {
@@ -55,7 +55,8 @@ service cloud.firestore {
         || (signedIn() && resource.data.miembros.get(request.auth.uid, '') == 'editor'
             && request.resource.data.miembros == resource.data.miembros
             && request.resource.data.miembrosUids == resource.data.miembrosUids
-            && tieneCandado(progId));
+            && (tieneCandado(progId)
+                || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lineaBaseActiva'])));
       allow delete: if isAdmin();
 
       // Candado: lo leen los miembros; lo toman, renuevan, solicitan y liberan los editores.
@@ -64,11 +65,34 @@ service cloud.firestore {
         allow write: if esEditor(progId);
       }
 
-      // Contenido (partidas, definiciones, líneas base): leen miembros; escriben editores con candado.
-      match /{sub=**} {
-        allow read: if isAdmin() || rolEn(progId) in ['editor', 'lector'];
-        allow create, update: if esEditor(progId) && tieneCandado(progId);
-        allow delete: if isAdmin() || (esEditor(progId) && tieneCandado(progId));
+      // v0.17: reglas explícitas por subcolección (reemplazan el comodín {sub=**}).
+      function esMiembro() { return isAdmin() || rolEn(progId) in ['editor', 'lector']; }
+      function puedeEscribir() { return esEditor(progId) && tieneCandado(progId); }
+
+      // Partidas: cada guardado sube la revisión en 1; un guardado sobre datos viejos se rechaza.
+      match /partidas/{pid} {
+        allow read: if esMiembro();
+        allow create: if puedeEscribir() && request.resource.data.rev == 1;
+        allow update: if puedeEscribir()
+          && request.resource.data.get('rev', 0) == resource.data.get('rev', 0) + 1;
+        allow delete: if isAdmin() || puedeEscribir();
+      }
+
+      // Definiciones (códigos, feriados, layouts). Guardar layouts del Gantt no requiere candado.
+      match /definiciones/{d} {
+        allow read: if esMiembro();
+        allow create: if puedeEscribir()
+          || (esEditor(progId) && request.resource.data.keys().hasOnly(['layouts']));
+        allow update: if puedeEscribir()
+          || (esEditor(progId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['layouts']));
+        allow delete: if isAdmin() || puedeEscribir();
+      }
+
+      // Líneas base.
+      match /lineasBase/{b} {
+        allow read: if esMiembro();
+        allow create, update: if puedeEscribir();
+        allow delete: if isAdmin() || puedeEscribir();
       }
     }
   }

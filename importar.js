@@ -1,6 +1,6 @@
 // Lectura del Excel de carga: Partidas, Códigos, Calendario y Actividades.
 // Requiere la librería global XLSX (SheetJS).
-import { parsePredecesoras, validarActividad, buscarCiclo } from "./validacion.js";
+import { parsePredecesoras, validarActividad, buscarCiclo, unidadesDuplicadas, msgDuplicada } from "./validacion.js";
 import { RESTRICCIONES } from "./util.js";
 
 const txt = (v) => String(v ?? "").trim();
@@ -144,6 +144,8 @@ export function leerExcel(arrayBuffer) {
   if (durIgnorada.length) avisos.push(`Se ignora la duración en ${durIgnorada.length} actividad(es) de partidas por ritmo: la define la partida ("Duración por unidad (días)", 1 si no se indica). Filas ${durIgnorada.slice(0, 10).join(", ")}${durIgnorada.length > 10 ? "…" : ""}.`);
   const ciclo = buscarCiclo(actividades);
   if (ciclo) errores.push(`Ciclo lógico entre predecesoras: ${ciclo.join(" → ")}.`);
+  unidadesDuplicadas(actividades, (pid) => pMap.get(pid))
+    .forEach((d) => errores.push(`Actividades, fila ${filaDe[d.id]}: ${msgDuplicada(d)}. Cada unidad va una sola vez por partida.`));
 
   return { errores, avisos, partidas, codigos, actividades, programa: { fechaInicio, calendario }, feriados };
 }

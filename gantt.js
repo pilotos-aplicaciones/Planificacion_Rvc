@@ -124,7 +124,7 @@ function filas(L) {
 export function tabGantt(el, api) {
   API = api;
   if (G.progId !== api.S.id) G = { layoutId: null, escala: null, colapsados: new Set(), progId: api.S.id };
-  const S = api.S, ed = api.puedeEditar, L = layoutActual();
+  const S = api.S, ed = api.puedeLayouts, L = layoutActual();   // layouts: basta el rol de editor, sin candado
   const esc_ = G.escala || L.opciones?.escala || "semana";
   el.innerHTML = `
     <div class="toolbar">
